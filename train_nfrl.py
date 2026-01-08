@@ -25,7 +25,7 @@ from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from utils.evaluation import eval_policy
-from utils.explorer import ExploerCrowdSim
+from utils.explorer import ExplorerCrowdSim
 from utils.models import (
     SocialCritic,
 )
@@ -185,7 +185,7 @@ critic = SocialCritic(
 
 model = NFRLNavigation(actor=actor, critic=critic).to(device)
 
-expl = ExploerCrowdSim(
+expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
     obs_dim=cfg.model.obs_dim,

@@ -39,7 +39,7 @@ class BC_flow(nn.Module):
         return out1
     
 
-class SocialActorFromNoise(nn.Module):
+class SocialActorFQL(nn.Module):
     def __init__(
         self,
         D,

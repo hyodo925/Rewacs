@@ -2,15 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from flow.flows import RealNVP, GrevNet
-from flow.graph_models import Encoder, PositionalEncoding
-# from flow.gtn_models import GTN
-from utils.models import (
-    MLPEncGCObsIntegrator,
-    MLPGraphConvEmbeddedGaussianIntegrator,
-    ConcatenateObsIntegrator,
-)
-import matplotlib.pyplot as plt
-
+from flow.graph_models import Encoder
 
 class SituationFlow(nn.Module):
     def __init__(

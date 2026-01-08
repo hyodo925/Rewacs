@@ -58,6 +58,7 @@ def grevnet_training(
     epoch_num=500,
     model_dir=None,
     model_save_freq=100,
+    batch_size=100,
     data_th=None,
     writer=None,
     use_wandb = False,
@@ -66,17 +67,19 @@ def grevnet_training(
         cnt = 0
         lf = 0
         outlier_list = []
-        for data in data_loader:
-            prev_obs, obs, prev_r_obs, r_obs, act, rwd, _, done = data
+        num_data = len(data_loader)
+        num_batches = num_data // batch_size
+        for _ in range(num_batches):
+            sample = data_loader.sample(batch_size)
+            obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+            
             flow_optimizer.zero_grad()
-            z, log_det_j = model(
-                prev_obs.to(model.device),
-            )
+            z, log_det_j = model(obs.to(model.device))
             loss = flow_loss(z, log_det_j, graph=True)
-            lf += loss.data.item()
             loss.backward()
             flow_optimizer.step()
-
+            
+            lf += loss.item()
             cnt += 1
             # model.set_anomaly_threshold(data_th)
         # switching_threshold = model.get_switching_score(data_th)

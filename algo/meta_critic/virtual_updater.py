@@ -24,3 +24,21 @@ class VirtualActorUpdater:
 
     def get(self, step_name):
         return self.virtual_params[step_name]
+    
+
+class Hot_Plug(object):
+    def __init__(self, model):
+        self.model = model
+        self.params = OrderedDict(self.model.named_parameters())
+    def update(self, lr=0.1):
+        for param_name in self.params.keys():
+            path = param_name.split('.')
+            cursor = self.model
+            for module_name in path[:-1]:
+                cursor = cursor._modules[module_name]
+            if lr > 0:
+                cursor._parameters[path[-1]] = self.params[param_name] - lr*self.params[param_name].grad
+            else:
+                cursor._parameters[path[-1]] = self.params[param_name]
+    def restore(self):
+        self.update(lr=0)

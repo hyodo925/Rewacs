@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 
-class AWAC:
+class TD3BC:
     def __init__(
         self,
         model,
@@ -77,13 +77,13 @@ class AWAC:
             )
 
         if update_actor:
-            action_gen, _, _, _ = self.actor.sample(
+            action_gen, _, _ = self.model.actor.sample(
                 (
                     obs.to(self.device),
-                    r_obs.reshape(-1, 1, self.r_obs_dim).to(self.device),
+                    r_obs.reshape(self.batch_size, 1, -1).to(self.device),
                 ),
             )
-            q1, q2 = self.critic((obs.to(self.device), r_obs.to(self.device)),act=act.squeeze().to(self.device),)
+            q1, q2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=act.squeeze().to(self.device),)
             q_values = torch.min(torch.cat((q1, q2), 1), dim=1)[0].reshape((-1, 1))
             q_values = q_values[0] 
             lmbda = self.alpha / q_values.abs().mean().detach()

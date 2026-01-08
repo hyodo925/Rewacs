@@ -21,7 +21,7 @@ from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from meta_rl_navigation import MetaRLNavigation
-from utils.evaluation import eval_policy
+from algo.meta_critic.eval import eval_policy
 from utils.explorer import ExplorerCrowdSim
 from utils.models import (
     SocialCritic,
@@ -29,9 +29,10 @@ from utils.models import (
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.awac.actor import SocialActorAWAC
-from algo.meta_critic.virtual_updater import VirtualActorUpdater
+from algo.meta_critic.actor import SocialActorMetaCriticAWAC
+from algo.meta_critic.virtual_updater import VirtualActorUpdater, Hot_Plug
 from algo.meta_critic.trainer import MetaCriticAWAC
+from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:
     import wandb
@@ -150,7 +151,7 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorAWAC(
+actor = SocialActorMetaCriticAWAC(
     cfg.model.projection_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
@@ -173,11 +174,11 @@ critic = SocialCritic(
     single=False,
 )
 
-meta_critic = MetaCritic(cfg.model.meta_critic_integrator_enc_hdims)
+meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
 model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 
-updater = VirtualActorUpdater()
-
+# updater = VirtualActorUpdater()
+# updater = Hot_Plug()
 expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
@@ -200,13 +201,13 @@ critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
 
-trainer = Meta_Critic(
+trainer = MetaCriticAWAC(
     model=model,
     replay_buffer=buffer,
     replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
-    meta_optimizer=meta_optimizer,
+    meta_critic_optimizer=meta_optimizer,
     batch_size=cfg.train.batch_size,
 )
 
@@ -236,7 +237,6 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             if not cfg.train.offline_learning:
                 expl_logs = expl.exploration_k_ep(
                     buffer=buffer,
-                    buffer_val=buffer_val,
                     model=model,
                     pbar=pbar,
                     render=False,
@@ -257,8 +257,6 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
-            updater=updater,
-            update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 

@@ -3,8 +3,13 @@ import torch as torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
+try:
+    from torch.func import functional_call  # PyTorch ≥ 2.0
+except ImportError:
+    from torch.nn.utils.stateless import functional_call  # PyTorch 1.9 ～ 1.13
 
-class SocialActorAWAC(nn.Module):
+
+class SocialActorMetaCriticAWAC(nn.Module):
     def __init__(
         self,
         D,
@@ -62,7 +67,7 @@ class SocialActorAWAC(nn.Module):
 
         log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
 
-        return mean, log_std
+        return mean, log_std, x
 
     def get_log_prob(self, data, action):
         if self.integrator != None:
@@ -79,7 +84,7 @@ class SocialActorAWAC(nn.Module):
         return logp_prob
 
     def sample(self, data):
-        mean, log_std = self.forward(data)
+        mean, log_std, x= self.forward(data)
         std = log_std.exp()
         mean = torch.tanh(mean) * self.act_max
         dist = Normal(mean, std)
@@ -88,5 +93,19 @@ class SocialActorAWAC(nn.Module):
         # action = torch.clamp(action, self.act_min, self.act_max)
         # action = torch.tanh(action) * self.act_max
         # mean = torch.clamp(mean, self.act_min, self.act_max)
-        return action, log_prob, mean
+        return action, log_prob, mean, x
     
+
+    def sample_with_params(self, data, params ):
+
+        out = functional_call(self, params, (data,))
+        mean, log_std, _ = out
+
+        std = log_std.exp()
+        normal = Normal(mean, std)
+        pre_tanh_value = normal.rsample()
+        action = torch.tanh(pre_tanh_value) * self.act_max
+
+        log_prob = normal.log_prob(pre_tanh_value).sum(dim=-1, keepdim=True)
+        
+        return action, log_prob, mean, std

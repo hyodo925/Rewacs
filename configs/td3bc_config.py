@@ -20,7 +20,7 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "circle_crossing"
+    train_val_scenario = "square_crossing"
     test_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
@@ -36,7 +36,7 @@ class Simulation:
 
     square_width = 20
     circle_radius = 4
-    human_num = 5
+    human_num = 10
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -69,9 +69,8 @@ class Model:
     action_space = [-1.0, 1.0]
     max_action = 1.0
 
-    actor_h_dim = 100
+    actor_h_dims = [100, 100]
     critic_h_dims = [100, 100]
-    actor_n_layers = 12
 
     actor_integrator_enc_hdims = [64]
     critic_integrator_enc_hdims = [64]
@@ -87,14 +86,14 @@ class Train:
     random_seed = 17
     offline_learning = True
     lr = 3e-4
-    preliminary_exp_n = 2000
-    total_it = 100000
+    preliminary_exp_n = 200
+    total_it = 10000
     batch_size = 100
-    buffer_capacity = 1000000
+    buffer_capacity = 100000
     actor_update_interval = 2
     target_update_interval = 1
     polyak = 0.995
-    training_alg = "NFMaxEnt"
+    training_alg = "TD3_BC"
 
 
 class Evaluation:
@@ -102,11 +101,11 @@ class Evaluation:
     final_eval_num = 500
     val_render = False
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:
-    wandb_project = "NFRL_training"
+    wandb_project = "TD3_BC_training"
     wandb_mode = "offline"
     # wandb_mode = "online"
     wandb = False

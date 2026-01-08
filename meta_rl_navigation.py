@@ -9,12 +9,14 @@ class MetaRLNavigation(nn.Module):
         self,
         actor,
         critic,
+        meta_critic,
         device="cpu",
     ):
         super(MetaRLNavigation, self).__init__()
 
         self.actor = actor
         self.critic = critic
+        self.meta_critic = meta_critic
         self.device = device
 
     def to(self, device):
@@ -22,8 +24,8 @@ class MetaRLNavigation(nn.Module):
         return super().to(device)
 
     def generate_action(self, state):
-        action, log_prob, mean = self.actor.sample(state)
-        return action, log_prob, mean
+        action, log_prob, mean, _ = self.actor.sample(state)
+        return action, log_prob, mean, _
 
     def save_model(self, path):
         torch.save(self.state_dict(), path)

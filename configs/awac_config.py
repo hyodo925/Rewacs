@@ -84,10 +84,10 @@ class Transfunc:
 
 class Train:
     random_seed = 17
-    offline_learning = False
+    offline_learning = True
     lr = 3e-4
-    preliminary_exp_n = 2000
-    total_it = 100000
+    preliminary_exp_n = 200
+    total_it = 10000
     batch_size = 100
     buffer_capacity = 100000
     actor_update_interval = 2
@@ -105,9 +105,9 @@ class Evaluation:
 
 
 class Log:
-    wandb_project = "RL-Navigation"
-    # wandb_mode = "offline"
-    wandb_mode = "online"
+    wandb_project = "AWAC_training"
+    wandb_mode = "offline"
+    # wandb_mode = "online"
     wandb = False
     save_model = False
 

@@ -22,7 +22,7 @@ from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from rl_navigation import RLNavigation
 from utils.evaluation import eval_policy
-from utils.explorer import ExploerCrowdSim
+from utils.explorer import ExplorerCrowdSim
 from utils.models import (
     SocialCritic,
 )
@@ -178,7 +178,7 @@ critic = SocialCritic(
 
 model = RLNavigation(actor=actor, critic=critic)
 
-expl = ExploerCrowdSim(
+expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
     obs_dim=cfg.model.obs_dim,

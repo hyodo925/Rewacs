@@ -11,7 +11,7 @@ from rewacs.envs.utils.info import Collision, Discomfort, ReachGoal, Timeout
 from utils.trajectory import Trajectory
 
 
-class ExploerCrowdSim:
+class ExplorerCrowdSim:
     def __init__(
         self,
         env,
@@ -285,7 +285,7 @@ class ExploerCrowdSim:
             #     # integrated_states = []
             done = False
             while not done:
-                a, _, _ = model.generate_action(
+                a, _, _, _ = model.generate_action(
                     (
                         humans_obs.unsqueeze(0).to(model.device),
                         robot_obs.reshape(1, 1, -1).to(model.device),
