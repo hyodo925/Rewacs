@@ -9,26 +9,15 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 #from utils.logger import logger
 import random
-from QSM.diffusion import Diffusion
-from QSM.model import MLP
-from QSM.helpers import EMA
+from QSM.diffusion_adaptive_time import Diffusion
+from qsm.model import MLP
+from qsm.helpers import EMA
 import wandb
 from tqdm import tqdm
 from utils.models import MLPGraphConvEmbeddedGaussianIntegrator
 import time
 from torch.utils.data import DataLoader
-def exponential_increase(t, p_init, p_target, T):
-    if p_init == 0:
-        raise ValueError("p_init cannot be zero for exponential increase.")
-    return p_init * (p_target / p_init) ** (t / T)
-def sigmoid_increase(t, p_init, p_target, T, k=10):
-    x = (t - T / 2) / T
-    return p_init + (p_target - p_init) / (1 + np.exp(-k * x))
-def linear_increase_clipped(t, p_init, p_target, T_clip):
-    if t >= T_clip:
-        return p_target
-    else:
-        return p_init + (p_target - p_init) * (t / T_clip)
+import torch.optim as optim
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256,integrator=None):
@@ -78,7 +67,7 @@ class ScoreMatchingLearner(object):
                  tau,
                  memory,
                  beta_schedule='linear',
-                 n_timesteps=100,
+                 n_timesteps=1000,
                  ema_decay=0.995,
                  step_start_ema=1000,
                  update_ema_every=5,
@@ -90,8 +79,7 @@ class ScoreMatchingLearner(object):
                  random_sample=True,
                  M=50,
                  consistent_M=False,
-                 use_eta=False,
-                 gc=True,
+                 use_eta=True,
                  ):
         actor_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
             obs_dim=obs_dim,
@@ -106,28 +94,23 @@ class ScoreMatchingLearner(object):
             enc_hdims=[64],
         )
 
-        self.gc = gc
+        self.model = MLP(state_dim=projection_dim, action_dim=action_dim, device=device,integrator=actor_integrator)
+
+        self.actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=self.model, max_action=max_action,
+                               beta_schedule=beta_schedule, n_timesteps=1000,random_sample=random_sample).to(device)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
+
         self.lr_decay = lr_decay
         self.grad_norm = grad_norm
         self.step = 0
         self.step_start_ema = step_start_ema
-        self.update_ema_every = update_ema_every
-        if self.gc:
-            self.critic = Critic(projection_dim, action_dim,integrator=critic_integrator).to(device)
-            self.model = MLP(state_dim=projection_dim, action_dim=action_dim, device=device,integrator=actor_integrator)
-
-        else:
-            self.critic = Critic(state_dim, action_dim).to(device)
-            self.model = MLP(state_dim=state_dim, action_dim=action_dim, device=device)
-        self.critic_target = copy.deepcopy(self.critic)
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
-        self.actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=self.model, max_action=max_action,
-                               beta_schedule=beta_schedule, n_timesteps=n_timesteps,random_sample=random_sample).to(device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
         self.ema = EMA(ema_decay)
         self.ema_model = copy.deepcopy(self.actor)
-        print(lr_maxt)
-        self.numsteps = lr_maxt
+        self.update_ema_every = update_ema_every
+        self.critic = Critic(projection_dim, action_dim,integrator=critic_integrator).to(device)
+        self.critic_target = copy.deepcopy(self.critic)
+        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
+
         if lr_decay:
             self.actor_lr_scheduler = CosineAnnealingLR(self.actor_optimizer, T_max=lr_maxt, eta_min=0.)
             self.critic_lr_scheduler = CosineAnnealingLR(self.critic_optimizer, T_max=lr_maxt, eta_min=0.)
@@ -137,7 +120,7 @@ class ScoreMatchingLearner(object):
         self.action_dim = action_dim
         self.tau = tau
         self.device = device
-        self.n_timesteps = n_timesteps
+        self.n_timesteps = 1000
         self.M = M
         self.consistent_M = consistent_M
         self.use_eta = use_eta
@@ -145,7 +128,7 @@ class ScoreMatchingLearner(object):
         if not eval: 
             wandb.init(
             # set the wandb project where this run will be logged
-                project="Q-Scorematching-entropy-epoch",
+                project="Q-Scorematching-graph-time",
                 config={
                 "learning_rate": lr,
                 "architecture": "MLP",
@@ -178,7 +161,7 @@ class ScoreMatchingLearner(object):
 
     def train(self, iterations,batch_size=100,global_steps=None):
         for _ in range(iterations):
-        # for state, action, reward, next_state, mask,done in data_loader:
+        #for state, action, reward, next_state, mask,done in data_loader:
             state, action, reward, next_state, mask = self.memory.sample(batch_size)
             state = state.to(self.device)
             next_state = next_state.to(self.device)
@@ -186,7 +169,7 @@ class ScoreMatchingLearner(object):
             """ Q Training """
             current_q1, current_q2 = self.critic(state, action)
 
-            next_action = self.ema_model(next_state)
+            next_action,reverse_step = self.ema_model(next_state)
             next_action = torch.clamp(next_action, min=-1.0, max=1.0)
             target_q1, target_q2 = self.critic_target(next_state, next_action)
             target_q = torch.min(target_q1, target_q2)
@@ -208,28 +191,19 @@ class ScoreMatchingLearner(object):
             noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
             
             critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-            critic_jacobian = critic_jacobian + self.eta# + self.eta
-            if self.consistent_M:
-                # coefficient = self.M + 400*global_steps/self.numsteps
-                coefficient=linear_increase_clipped(global_steps,self.M,400,self.numsteps*0.8)
-                # coefficient = exponential_increase(global_steps,self.M,400,self.numsteps)
-                # coefficient = sigmoid_increase(global_steps,self.M,400,self.numsteps)
-            else:
-                action_norms = torch.norm(action, dim=1)
-                jacobian_norms = torch.norm(critic_jacobian,dim=1)
-                coefficient = (action_norms/jacobian_norms).unsqueeze(1) 
-            wandb.log({"coefficient":coefficient},step=global_steps)
 
-                # critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-                # y_pred = critic_jacobian
-                # 勾配の形状を確認
+            coefficient = self.M
+
             loss = self.actor.p_losses(x_start=-coefficient*critic_jacobian, state=state, t=t, x_noisy=noisy_actions)
             self.actor_optimizer.zero_grad()
             loss.backward()
             if self.grad_norm > 0: 
                 actor_grad_norms = nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.grad_norm, norm_type=2)
             self.actor_optimizer.step()
+            self.actor_optimizer.zero_grad()
             wandb.log({"QSM_loss": loss},step=global_steps)
+            wandb.log({"Reverse_step": reverse_step},step=global_steps)
+
 
             """ Step Target network """
             if self.step % self.update_ema_every == 0:
@@ -243,8 +217,7 @@ class ScoreMatchingLearner(object):
         if self.lr_decay: 
             self.actor_lr_scheduler.step()
             self.critic_lr_scheduler.step()
-            
-
+    
     def sample_action(self, state,eval=False):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
 
@@ -253,7 +226,7 @@ class ScoreMatchingLearner(object):
 
         # ここに測りたい処理を書く
         with torch.no_grad():
-            action = self.actor.sample(state)
+            action,reverse_step = self.actor.sample(state)
         if not eval:
             action = action + torch.randn_like(action) * 0.1
         action = torch.clamp(action, min=-1.0, max=1.0)
@@ -262,9 +235,7 @@ class ScoreMatchingLearner(object):
 
         # 処理時間を計算
         elapsed_time = end_time - start_time
-        return action.cpu().data.numpy().flatten(),elapsed_time#,action
-    def output_entropy(self, action):
-        return self.actor.entropy(action*-1)
+        return action.cpu().data.numpy().flatten(),elapsed_time
     def save_model(self, dir, id=None):
         if id is not None:
             torch.save(self.actor.state_dict(), f'{dir}/actor_{id}.pth')
@@ -280,5 +251,3 @@ class ScoreMatchingLearner(object):
         else:
             self.actor.load_state_dict(torch.load(f'{dir}/actor.pth'))
             self.critic.load_state_dict(torch.load(f'{dir}/critic.pth'))
-
-

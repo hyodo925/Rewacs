@@ -9,14 +9,15 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 #from utils.logger import logger
 import random
-from QSM.diffusion_adaptive import Diffusion
-from QSM.model import MLP
-from QSM.helpers import EMA
+from QSM.diffusion_adaptive_tomita import Diffusion
+from qsm.model import MLP
+from qsm.helpers import EMA
 import wandb
 from tqdm import tqdm
 from utils.models import MLPGraphConvEmbeddedGaussianIntegrator
 import time
 from torch.utils.data import DataLoader
+import torch.optim as optim
 
 class Critic(nn.Module):
     def __init__(self, state_dim, action_dim, hidden_dim=256,integrator=None):
@@ -53,32 +54,7 @@ class Critic(nn.Module):
     def q_min(self, state, action):
         q1, q2 = self.forward(state, action)
         return torch.min(q1, q2)
-class AddOne(nn.Module):
-    def forward(self, x):
-        return x + 1
 
-class Alpha(nn.Module):
-    def __init__(self, state_dim, hidden_dim=256,integrator=None):
-        super(Alpha, self).__init__()
-        # ネットワークの定義
-        self.integrator = integrator
-        self.fc = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),  # 入力層
-            nn.Mish(),                         # 活性化関数
-            nn.Linear(hidden_dim, hidden_dim), # 隠れ層1
-            nn.Mish(),                         # 活性化関数
-            nn.Linear(hidden_dim, 1),          # 出力層
-            nn.Softplus(),                     # 出力を正の値に制限
-            AddOne()                           # 出力を1以上にシフト
-        )
-
-    def forward(self, state):
-        # 順伝播計算
-        if self.integrator != None:
-            obs = state[:,5:]
-            r_obs = state[:,:5]
-            state = self.integrator(obs,r_obs)
-        return self.fc(state)
 class ScoreMatchingLearner(object):
     def __init__(self,
                  state_dim,
@@ -117,12 +93,7 @@ class ScoreMatchingLearner(object):
             projection_dim=projection_dim,
             enc_hdims=[64],
         )
-        alpha_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
-            obs_dim=obs_dim,
-            r_obs_dim=r_obs_dim,
-            projection_dim=projection_dim,
-            enc_hdims=[64],
-        )
+
         self.model = MLP(state_dim=projection_dim, action_dim=action_dim, device=device,integrator=actor_integrator)
 
         self.actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=self.model, max_action=max_action,
@@ -136,9 +107,8 @@ class ScoreMatchingLearner(object):
         self.ema = EMA(ema_decay)
         self.ema_model = copy.deepcopy(self.actor)
         self.update_ema_every = update_ema_every
-        self.alpha = Alpha(projection_dim,integrator=alpha_integrator).to(device)
-        # self.alpha = Alpha(state_dim)to.(device)
-        self.alpha_optimizer = torch.optim.Adam(self.alpha.parameters(), lr=1e-3)
+        self.alpha = nn.Parameter(torch.tensor(1.0, requires_grad=True,device=device))  # 初期値1.0
+        self.alpha_optimizer = torch.optim.SGD([self.alpha], lr=1e-2)
         self.critic = Critic(projection_dim, action_dim,integrator=critic_integrator).to(device)
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
@@ -191,106 +161,6 @@ class ScoreMatchingLearner(object):
             return
         self.ema.update_model_average(self.ema_model, self.actor)
 
-    def imitation(self, iterations, batch_size,data_loader): 
-        for _ in tqdm(range(iterations),desc="Imitation training"):
-            for state, action, reward, next_state, mask,done in data_loader:
-                state = state.to(self.device)
-                next_state = next_state.to(self.device)
-                #state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
-                action = (action.view(batch_size,-1)).to(self.device)
-                """ Q Training """
-                current_q1, current_q2 = self.critic(state, action)
-
-                next_action = self.ema_model(next_state)
-                target_q1, target_q2 = self.critic_target(next_state, next_action)
-                target_q = torch.min(target_q1, target_q2)
-
-                target_q = (reward.to(self.device) + mask.to(self.device) * target_q).detach()
-
-                critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                self.critic_optimizer.step()
-
-                """ Policy Training """
-                batch_size = len(action)
-                t = torch.randint(0, self.n_timesteps, (batch_size,), device=self.device).long()
-                noise = torch.randn_like(action)
-                noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
-                loss = self.actor.p_losses(x_start=noise, state=state, t=t, x_noisy=noisy_actions)
-
-                self.actor_optimizer.zero_grad()
-                loss.backward()
-                self.actor_optimizer.step()
-                self.step_ema()
-    
-    def warmup(self, iterations, data_loader,batch_size=100,global_steps=None,itr_num=None):
-        cnt=0
-        #for _ in range(iterations)
-        for state, action, reward, next_state, mask,done in data_loader:
-            # state, action, reward, next_state, mask = self.memory.sample(batch_size)
-            state = state.to(self.device)
-            next_state = next_state.to(self.device)
-            action = (action.view(batch_size,-1)).to(self.device)
-            """ Q Training """
-            current_q1, current_q2 = self.critic(state, action)
-
-            next_action = self.ema_model(next_state)
-            next_action = torch.clamp(next_action, min=-1.0, max=1.0)
-            target_q1, target_q2 = self.critic_target(next_state, next_action)
-            target_q = torch.min(target_q1, target_q2)
-
-            target_q = (reward.to(self.device) + mask.to(self.device) * target_q).detach()
-
-            critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
-            wandb.log({"critic_loss": critic_loss},step=global_steps)
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            if self.grad_norm > 0:
-                critic_grad_norms = nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=self.grad_norm, norm_type=2)
-            self.critic_optimizer.step()
-
-            """ Policy Training """
-            batch_size = len(action)
-            t = torch.randint(0, self.n_timesteps, (batch_size,), device=self.device).long()
-            noise = torch.randn_like(action)
-            noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
-            
-            critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-            critic_jacobian = critic_jacobian + self.eta
-
-            action_norms = torch.norm(action, dim=1)
-            jacobian_norms = torch.norm(critic_jacobian,dim=1)
-            coefficient = (action_norms/jacobian_norms).unsqueeze(1) 
-            wandb.log({"coefficient":coefficient.mean()},step=global_steps)
-
-            # critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-            # y_pred = critic_jacobian
-            # 勾配の形状を確認
-            loss = self.actor.p_losses(x_start=-coefficient*critic_jacobian, state=state, t=t, x_noisy=noisy_actions)
-            self.actor_optimizer.zero_grad()
-            loss.backward()
-            if self.grad_norm > 0: 
-                actor_grad_norms = nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.grad_norm, norm_type=2)
-            self.actor_optimizer.step()
-            self.actor_optimizer.zero_grad()
-            wandb.log({"QSM_loss": loss},step=global_steps)
-
-            """ Step Target network """
-            if self.step % self.update_ema_every == 0:
-                self.step_ema()
-
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-
-            self.step += 1
-            cnt += 1
-            if cnt >= itr_num:
-                break
-        if self.lr_decay: 
-            self.actor_lr_scheduler.step()
-            self.critic_lr_scheduler.step()
-
     def train(self, iterations,batch_size=100,global_steps=None):
         for _ in range(iterations):
         #for state, action, reward, next_state, mask,done in data_loader:
@@ -323,12 +193,13 @@ class ScoreMatchingLearner(object):
             noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
             
             critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
+            critic_jacobian = critic_jacobian + self.eta
 
             if self.consistent_M:
                 coefficient = self.M
             else:
-                coefficient = self.alpha(state).detach()
-                wandb.log({"coefficient": coefficient.mean()},step=global_steps)
+                coefficient = F.softplus(self.alpha.detach())+1
+                # wandb.log({"coefficient": coefficient.mean()},step=global_steps)
 
             loss = self.actor.p_losses(x_start=-coefficient*critic_jacobian, state=state, t=t, x_noisy=noisy_actions)
             self.actor_optimizer.zero_grad()
@@ -340,16 +211,20 @@ class ScoreMatchingLearner(object):
             wandb.log({"QSM_loss": loss},step=global_steps)
 
             #alphaを評価するために行動を生成
-            alpha = self.alpha(state)
-            jacobian_norms = torch.norm(critic_jacobian,dim=1).detach()
-            alpha_action = self.actor.alpha_sample(state,alpha,jacobian_norms)
+            #jacobian_norms = torch.norm(critic_jacobian,dim=1).detach()
+            #alpha_action = self.actor.alpha_sample(state,F.softplus(self.alpha)+1,jacobian_norms)
+            alpha_action = self.actor.alpha_sample(state,F.softplus(self.alpha)+1,self.critic)
             q1,q2 = self.critic(state, alpha_action)
-            alpha_loss = -torch.min(q1,q2).mean()
+            alpha_loss = -torch.min(q1,q2).sum()
+            alpha_loss = alpha_loss * 1e3  # 損失関数のスケールアップ
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
+            wandb.log({"alpha_grad": self.alpha.grad.item()},step=global_steps)
             self.alpha_optimizer.step()
+
             wandb.log({"alpha_action": alpha_action.mean()},step=global_steps)
             wandb.log({"alpha_loss": alpha_loss},step=global_steps)
+            wandb.log({"alpha": self.alpha.item()},step=global_steps)
             """ Step Target network """
             if self.step % self.update_ema_every == 0:
                 self.step_ema()
@@ -363,7 +238,7 @@ class ScoreMatchingLearner(object):
             self.actor_lr_scheduler.step()
             self.critic_lr_scheduler.step()
     
-    def sample_action(self, state,eval=False):
+    def sample_action(self, state,eval=False,global_steps=None):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
 
         # 処理の開始時刻を取得
@@ -377,7 +252,7 @@ class ScoreMatchingLearner(object):
         action = torch.clamp(action, min=-1.0, max=1.0)
         # 処理の終了時刻を取得
         end_time = time.time()
-
+        wandb.log({"action": action.mean()},step=global_steps)
         # 処理時間を計算
         elapsed_time = end_time - start_time
         return action.cpu().data.numpy().flatten(),elapsed_time
@@ -385,9 +260,11 @@ class ScoreMatchingLearner(object):
         if id is not None:
             torch.save(self.actor.state_dict(), f'{dir}/actor_{id}.pth')
             torch.save(self.critic.state_dict(), f'{dir}/critic_{id}.pth')
+            torch.save(self.alpha.detach().cpu().numpy(), f'{dir}/alpha_{id}.pth')
         else:
             torch.save(self.actor.state_dict(), f'{dir}/actor.pth')
             torch.save(self.critic.state_dict(), f'{dir}/critic.pth')
+            torch.save(self.alpha.detach().cpu().numpy(), f'{dir}/alpha.pth')
 
     def load_model(self, dir, id=None):
         if id is not None:
@@ -396,5 +273,4 @@ class ScoreMatchingLearner(object):
         else:
             self.actor.load_state_dict(torch.load(f'{dir}/actor.pth'))
             self.critic.load_state_dict(torch.load(f'{dir}/critic.pth'))
-
-
+            self.alpha = torch.tensor(torch.load(path), requires_grad=False)  # 学習しない設定

@@ -9,9 +9,9 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 #from utils.logger import logger
 import random
-from QSM.diffusion import Diffusion
-from QSM.model import MLP
-from QSM.helpers import EMA
+from qsm.diffusion_ode import Diffusion
+from qsm.model import MLP
+from qsm.helpers import EMA
 import wandb
 from tqdm import tqdm
 from utils.models import MLPGraphConvEmbeddedGaussianIntegrator
@@ -76,6 +76,10 @@ class ScoreMatchingLearner(object):
                  grad_norm=1.0,
                  eval=False,
                  random_sample=True,
+                 M=50,
+                 consistent_M=False,
+                 use_eta=True,
+                 gc=True,
                  ):
         actor_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
             obs_dim=obs_dim,
@@ -89,24 +93,27 @@ class ScoreMatchingLearner(object):
             projection_dim=projection_dim,
             enc_hdims=[64],
         )
-        self.model = MLP(state_dim=projection_dim, action_dim=action_dim, device=device,integrator=actor_integrator)
 
-        self.actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=self.model, max_action=max_action,
-                               beta_schedule=beta_schedule, n_timesteps=n_timesteps,random_sample=random_sample).to(device)
-        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
-
+        self.gc = gc
         self.lr_decay = lr_decay
         self.grad_norm = grad_norm
         self.step = 0
         self.step_start_ema = step_start_ema
-        self.ema = EMA(ema_decay)
-        self.ema_model = copy.deepcopy(self.actor)
         self.update_ema_every = update_ema_every
+        if self.gc:
+            self.critic = Critic(projection_dim, action_dim,integrator=critic_integrator).to(device)
+            self.model = MLP(state_dim=projection_dim, action_dim=action_dim, device=device,integrator=actor_integrator)
 
-        self.critic = Critic(projection_dim, action_dim,integrator=critic_integrator).to(device)
+        else:
+            self.critic = Critic(state_dim, action_dim).to(device)
+            self.model = MLP(state_dim=state_dim, action_dim=action_dim, device=device)
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=lr)
-
+        self.actor = Diffusion(state_dim=state_dim, action_dim=action_dim, model=self.model, max_action=max_action,
+                               beta_schedule=beta_schedule, n_timesteps=n_timesteps,random_sample=random_sample).to(device)
+        self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=lr)
+        self.ema = EMA(ema_decay)
+        self.ema_model = copy.deepcopy(self.actor)
         if lr_decay:
             self.actor_lr_scheduler = CosineAnnealingLR(self.actor_optimizer, T_max=lr_maxt, eta_min=0.)
             self.critic_lr_scheduler = CosineAnnealingLR(self.critic_optimizer, T_max=lr_maxt, eta_min=0.)
@@ -117,7 +124,10 @@ class ScoreMatchingLearner(object):
         self.tau = tau
         self.device = device
         self.n_timesteps = n_timesteps
-        self.eta = 1e-6
+        self.M = M
+        self.consistent_M = consistent_M
+        self.use_eta = use_eta
+        self.eta = 1e-16 if use_eta else 0
         if not eval: 
             wandb.init(
             # set the wandb project where this run will be logged
@@ -152,106 +162,9 @@ class ScoreMatchingLearner(object):
             return
         self.ema.update_model_average(self.ema_model, self.actor)
 
-    def imitation(self, iterations, batch_size,data_loader): 
-        for _ in tqdm(range(iterations),desc="Imitation training"):
-            for state, action, reward, next_state, mask,done in data_loader:
-                state = state.to(self.device)
-                next_state = next_state.to(self.device)
-                #state, action, next_state, reward, not_done = replay_buffer.sample(batch_size)
-                action = (action.view(batch_size,-1)).to(self.device)
-                """ Q Training """
-                current_q1, current_q2 = self.critic(state, action)
-
-                next_action = self.ema_model(next_state)
-                target_q1, target_q2 = self.critic_target(next_state, next_action)
-                target_q = torch.min(target_q1, target_q2)
-
-                target_q = (reward.to(self.device) + mask.to(self.device) * target_q).detach()
-
-                critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
-                self.critic_optimizer.zero_grad()
-                critic_loss.backward()
-                self.critic_optimizer.step()
-
-                """ Policy Training """
-                batch_size = len(action)
-                t = torch.randint(0, self.n_timesteps, (batch_size,), device=self.device).long()
-                noise = torch.randn_like(action)
-                noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
-                loss = self.actor.p_losses(x_start=noise, state=state, t=t, x_noisy=noisy_actions)
-
-                self.actor_optimizer.zero_grad()
-                loss.backward()
-                self.actor_optimizer.step()
-                self.step_ema()
-    def warmup(self, iterations, data_loader,batch_size=100,global_steps=None,itr_num=None):
-        cnt=0
-        #for _ in range(iterations)
-        for state, action, reward, next_state, mask,done in data_loader:
-            # state, action, reward, next_state, mask = self.memory.sample(batch_size)
-            state = state.to(self.device)
-            next_state = next_state.to(self.device)
-            action = (action.view(batch_size,-1)).to(self.device)
-            """ Q Training """
-            current_q1, current_q2 = self.critic(state, action)
-
-            next_action = self.ema_model(next_state)
-            next_action = torch.clamp(next_action, min=-1.0, max=1.0)
-            target_q1, target_q2 = self.critic_target(next_state, next_action)
-            target_q = torch.min(target_q1, target_q2)
-
-            target_q = (reward.to(self.device) + mask.to(self.device) * target_q).detach()
-
-            critic_loss = F.mse_loss(current_q1, target_q) + F.mse_loss(current_q2, target_q)
-            wandb.log({"critic_loss": critic_loss},step=global_steps)
-            self.critic_optimizer.zero_grad()
-            critic_loss.backward()
-            if self.grad_norm > 0:
-                critic_grad_norms = nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=self.grad_norm, norm_type=2)
-            self.critic_optimizer.step()
-
-            """ Policy Training """
-            batch_size = len(action)
-            t = torch.randint(0, self.n_timesteps, (batch_size,), device=self.device).long()
-            noise = torch.randn_like(action)
-            noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
-            
-            critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-            critic_jacobian = critic_jacobian + self.eta
-
-            action_norms = torch.norm(action, dim=1)
-            jacobian_norms = torch.norm(critic_jacobian,dim=1)
-            coefficient = (action_norms/jacobian_norms).unsqueeze(1) 
-            wandb.log({"coefficient":coefficient.mean()},step=global_steps)
-
-            # critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-            # y_pred = critic_jacobian
-            # 勾配の形状を確認
-            loss = self.actor.p_losses(x_start=-coefficient*critic_jacobian, state=state, t=t, x_noisy=noisy_actions)
-            self.actor_optimizer.zero_grad()
-            loss.backward()
-            if self.grad_norm > 0: 
-                actor_grad_norms = nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=self.grad_norm, norm_type=2)
-            self.actor_optimizer.step()
-            wandb.log({"QSM_loss": loss},step=global_steps)
-
-            """ Step Target network """
-            if self.step % self.update_ema_every == 0:
-                self.step_ema()
-
-            for param, target_param in zip(self.critic.parameters(), self.critic_target.parameters()):
-                target_param.data.copy_(self.tau * param.data + (1 - self.tau) * target_param.data)
-
-            self.step += 1
-            cnt += 1
-            if cnt >= itr_num:
-                break
-        if self.lr_decay: 
-            self.actor_lr_scheduler.step()
-            self.critic_lr_scheduler.step()
-    def train(self, iterations, data_loader,batch_size=100,global_steps=None,itr_num=None):
+    def train(self, iterations,batch_size=100,global_steps=None):
         for _ in range(iterations):
-        #for state, action, reward, next_state, mask,done in data_loader:
+        # for state, action, reward, next_state, mask,done in data_loader:
             state, action, reward, next_state, mask = self.memory.sample(batch_size)
             state = state.to(self.device)
             next_state = next_state.to(self.device)
@@ -281,16 +194,18 @@ class ScoreMatchingLearner(object):
             noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
             
             critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-            critic_jacobian = critic_jacobian + self.eta
+            critic_jacobian = critic_jacobian + self.eta# + self.eta
+            if self.consistent_M:
+                coefficient = self.M
+            else:
+                action_norms = torch.norm(action, dim=1)
+                jacobian_norms = torch.norm(critic_jacobian,dim=1)
+                coefficient = (action_norms/jacobian_norms).unsqueeze(1) 
+                wandb.log({"coefficient":coefficient.mean()},step=global_steps)
 
-            action_norms = torch.norm(action, dim=1)
-            jacobian_norms = torch.norm(critic_jacobian,dim=1)
-            coefficient = (action_norms/jacobian_norms).unsqueeze(1) 
-            wandb.log({"coefficient":coefficient.mean()},step=global_steps)
-
-            # critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
-            # y_pred = critic_jacobian
-            # 勾配の形状を確認
+                # critic_jacobian = self.compute_jacobian(state, noisy_actions.clone())
+                # y_pred = critic_jacobian
+                # 勾配の形状を確認
             loss = self.actor.p_losses(x_start=-coefficient*critic_jacobian, state=state, t=t, x_noisy=noisy_actions)
             self.actor_optimizer.zero_grad()
             loss.backward()
@@ -311,25 +226,17 @@ class ScoreMatchingLearner(object):
         if self.lr_decay: 
             self.actor_lr_scheduler.step()
             self.critic_lr_scheduler.step()
-    
+            
+
     def sample_action(self, state,eval=False):
         state = torch.FloatTensor(state.reshape(1, -1)).to(self.device)
-
-        # 処理の開始時刻を取得
-        start_time = time.time()
 
         # ここに測りたい処理を書く
         with torch.no_grad():
             action = self.actor.sample(state)
-        if not eval:
-            action = action + torch.randn_like(action) * 0.1
-        action = torch.clamp(action, min=-1.0, max=1.0)
-        # 処理の終了時刻を取得
-        end_time = time.time()
+            action = torch.clamp(action, min=-1.0, max=1.0)
 
-        # 処理時間を計算
-        elapsed_time = end_time - start_time
-        return action.cpu().data.numpy().flatten(),elapsed_time
+        return action.cpu().data.numpy().flatten()
     def save_model(self, dir, id=None):
         if id is not None:
             torch.save(self.actor.state_dict(), f'{dir}/actor_{id}.pth')

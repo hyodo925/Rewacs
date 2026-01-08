@@ -13,8 +13,8 @@ from diffusers.optimization import get_scheduler
 #from utils.logger import logger
 from dipo.Unet import ConditionalUnet1D
 import random
-from QSM.diffusion import Diffusion
-from QSM.helpers import EMA
+from qsm.diffusion import Diffusion
+from qsm.helpers import EMA
 import wandb
 from tqdm import tqdm
 

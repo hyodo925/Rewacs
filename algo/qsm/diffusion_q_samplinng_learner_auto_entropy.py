@@ -9,14 +9,15 @@ import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR
 #from utils.logger import logger
 import random
-from QSM.diffusion import Diffusion
-from QSM.model import MLP
-from QSM.helpers import EMA
+from qsm.diffusion import Diffusion
+from qsm.model import MLP
+from qsm.helpers import EMA
 import wandb
 from tqdm import tqdm
 from utils.models import MLPGraphConvEmbeddedGaussianIntegrator
 import time
 from torch.utils.data import DataLoader
+import math
 def exponential_increase(t, p_init, p_target, T):
     if p_init == 0:
         raise ValueError("p_init cannot be zero for exponential increase.")
@@ -136,12 +137,14 @@ class ScoreMatchingLearner(object):
         self.tau = tau
         self.device = device
         self.n_timesteps = n_timesteps
-        self.M = M
+        self.M = nn.Parameter(torch.tensor(float(M), dtype=torch.float32, requires_grad=True, device=device))
+        self.entropy_optimizer=torch.optim.Adam([self.M],lr=3e-3)
         self.k_sample = k_sample
+        self.target_ent=2
         if not eval: 
             wandb.init(
             # set the wandb project where this run will be logged
-                project="DQS-entropy-epoch",
+                project="DQS-entropy-auto-epoch",
                 config={
                 "learning_rate": lr,
                 "architecture": "MLP",
@@ -150,7 +153,52 @@ class ScoreMatchingLearner(object):
                 "num_steps": n_timesteps,
                 }
             )
+    def update_entropy(self, state,global_steps=None, k_sample=None):
+        """
+        noisy_actionsに対して、log(sum(exp(Q))) の勾配を計算する関数
 
+        Args:
+            state (torch.Tensor): 状態 (batch_size, state_dim)
+            noisy_actions (torch.Tensor): アクション (batch_size, action_dim)
+            k_sample (int, optional): sampling number
+
+        Returns:
+            torch.Tensor: noisy_actionsに対する勾配 (batch_size, action_dim)
+        """
+        if k_sample is None:
+            k_sample = self.k_sample
+        action = self.actor(state)
+        action = torch.clamp(action, min=-1.0, max=1.0)
+        self.M = self.M.requires_grad_(True)
+
+        B, action_dim = action.shape
+
+        noise = torch.randn(k_sample, B, action_dim, device=action.device)
+        noise = torch.clamp(noise, min=-1.0, max=1.0)  # アクション空間の範囲に収める
+        noise_flat = noise.reshape(-1, action_dim)  
+
+        state_expanded = state.unsqueeze(0).expand(k_sample, -1, -1).reshape(-1, state.shape[-1])
+        qi_1, qi_2 = self.critic(state, action)
+        Q = torch.min(qi_1, qi_2)
+
+        qi_1_noise, qi_2_noise = self.critic(state_expanded, noise_flat)
+        qi_noise = self.M *torch.min(qi_1_noise, qi_2_noise)
+        logZ = torch.logsumexp(qi_noise.view(k_sample, B, 1), dim=0) - math.log(k_sample)+math.log(4.0)     # shape: [B, 1]
+        pi_probs = torch.softmax(Q - logZ,dim=0)
+        expected_Q = torch.sum(pi_probs * Q.squeeze(-1), dim=0, keepdim=True)  # (B, 1)
+
+        entropy = 1/self.M *logZ - Q
+        target = torch.ones_like(entropy) * 1/self.M * self.target_ent
+        loss_ent = F.mse_loss(entropy, target)
+        self.entropy_optimizer.zero_grad()
+        loss_ent.backward()
+        self.entropy_optimizer.step()
+        wandb.log({"pi_probs": pi_probs.mean()},step=global_steps)
+        wandb.log({"logZ": logZ.mean()}, step=global_steps)
+        wandb.log({"Q": Q.mean()}, step=global_steps)
+        wandb.log({"expected_Q":expected_Q.mean()},step=global_steps)
+        wandb.log({"entropy": entropy.mean()},step=global_steps)
+        wandb.log({"loss_ent": loss_ent},step=global_steps)
     def compute_logsumQ_gradient(self, state, noisy_actions, timesteps, global_steps=None, k_sample=None):
         """
         noisy_actionsに対して、log(sum(exp(Q))) の勾配を計算する関数
@@ -256,10 +304,13 @@ class ScoreMatchingLearner(object):
             noisy_actions = self.actor.q_sample(x_start=action, t=t, noise=noise)
             critic_jacobian=self.compute_logsumQ_gradient(state,noisy_actions,t,global_steps)
             # coefficient = self.M + 400*global_steps/self.numsteps
-            coefficient=linear_increase_clipped(global_steps,self.M,400,self.numsteps*0.8)
+            # coefficient=linear_increase_clipped(global_steps,self.M,400,self.numsteps*0.8)
+            self.update_entropy(state,global_steps=global_steps)
             # coefficient = exponential_increase(global_steps,self.M,400,self.numsteps)
             # coefficient = sigmoid_increase(global_steps,self.M,400,self.numsteps)
             # coefficient = 400#10**3
+
+            coefficient = self.M.clone().detach()
             wandb.log({"coefficient":coefficient},step=global_steps)
             wandb.log({"critic_jacobian":critic_jacobian.mean()},step=global_steps)
             loss = self.actor.p_losses(x_start=-coefficient*critic_jacobian, state=state, t=t, x_noisy=noisy_actions)
