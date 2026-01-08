@@ -1,9 +1,9 @@
 import torch as torch
 import torch.nn as nn
 
-class Critic_Network(nn.Module):
+class MetaCriticNet(nn.Module):
     def __init__(self, hidden_dim):
-        super(Critic_Network, self).__init__()
+        super(MetaCriticNet, self).__init__()
         self.fc1 = nn.Linear(hidden_dim,100)
         self.fc2 = nn.Linear(100,100)
         self.fc3 = nn.Linear(100,1)
@@ -14,7 +14,7 @@ class Critic_Network(nn.Module):
         #x = nn.functional.tanh(self.fc3(x))
         return torch.mean(x)
     
-class Critic_Network_Graph(nn.Module):
+class MetaCriticGraphNet(nn.Module):
     def __init__(
         self, D, d, h_dims=[256], integrator=None, activation="leaky_relu", single=False
     ):

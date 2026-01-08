@@ -24,13 +24,14 @@ from meta_rl_navigation import MetaRLNavigation
 from utils.evaluation import eval_policy
 from utils.explorer import ExplorerCrowdSim
 from utils.models import (
-    MLPGraphConvEmbeddedGaussianIntegrator,
-    SocialActorAWAC,
     SocialCritic,
-    MetaCritic
 )
-from utils.virtual_updater import VirtualActorUpdater
-from meta_util.meta_critic_trainer import Meta_Critic
+from utils.state_integrators import (
+    EmbeddedGaussianIntegrator,
+)
+from algo.awac.actor import SocialActorAWAC
+from algo.meta_critic.virtual_updater import VirtualActorUpdater
+from algo.meta_critic.trainer import MetaCriticAWAC
 
 try:
     import wandb
@@ -142,7 +143,7 @@ def convert_action(action):
     return action
 
 
-actor_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
+actor_integrator = EmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
@@ -157,7 +158,7 @@ actor = SocialActorAWAC(
     integrator=actor_integrator,
 )
 
-critic_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
+critic_integrator = EmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
