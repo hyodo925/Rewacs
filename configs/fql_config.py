@@ -75,7 +75,10 @@ class Model:
     actor_integrator_enc_hdims = [64]
     critic_integrator_enc_hdims = [64]
 
-
+    t_dim = 1
+    x_t_dim = action_dim
+    flow_steps = 10
+    
 class Transfunc:
     with_peds_vel = True
     peds_vel_as_relative = True

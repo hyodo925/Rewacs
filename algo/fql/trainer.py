@@ -14,6 +14,7 @@ class FQL:
         critic_optimizer,
         bc_flow_optimizer,
         batch_size,
+        flow_steps,
         polyak=0.995,
         gamma=0.9,
         alpha=1.0,
@@ -31,6 +32,7 @@ class FQL:
         self.gamma = torch.as_tensor([gamma])
         self.alpha = torch.as_tensor([alpha])
         self.beta = torch.as_tensor([beta])
+        self.flow_steps = flow_steps
         self.distill_only = False
         self.device = model.device
 
@@ -40,14 +42,9 @@ class FQL:
     def update(self, update_actor=False, data_for_logging=None):
         sample = self.replay_buffer.sample(self.batch_size)
         obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
-
+        z = torch.randn((act.squeeze().shape[0], act.squeeze().shape[1]), device=self.device) 
         with torch.no_grad():
-            next_act_target, next_log_prob, _ = self.model.actor.sample(
-                (
-                    next_obs.to(self.device),
-                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
-                )
-            )
+            next_act_target = self.model.actor.sample_one_step_action((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),noise=z)
             Q_target_1, Q_target_2 = self.target.critic(
                 (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
             )
@@ -55,7 +52,7 @@ class FQL:
                 0
             ].unsqueeze(-1)
 
-            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
+            Q_target = rwd.to(self.device) + (self.gamma.to(self.device) * Q_target_min) * done.to(
                 self.device
             )
 
@@ -78,32 +75,30 @@ class FQL:
                 step=data_for_logging[1],
             )
 
-        x_0 = torch.randn((act.shape[0], act.shape[1]), device=self.device)
-        x_1 = act.to(self.device)
+        x_0 = torch.randn((act.squeeze().shape[0], act.squeeze().shape[1]), device=self.device)
+        x_1 = act.squeeze().to(self.device)
         t = torch.rand((act.shape[0], 1), device=self.device)
         x_t = (1 - t) * x_0 + t * x_1
         vel = x_1 - x_0
-        
-        # with torch.no_grad():
-        next_obs_actions = self.model.actor.sample_one_step_action((obs.to(self.device),r_obs.reshape(-1, 1, self.r_obs_dim).to(self.device),),noise=z)
-        q1, q2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=next_obs_actions.detach(),)
-        q_min = torch.min(torch.cat((q1, q2), 1), dim=1)[0].reshape((-1, 1))
-        #lmbda = self.alpha / q_values.abs().mean().detach()
         pred = self.model.bc_flow((obs.to(self.device), r_obs.to(self.device)), t, x_t)
         bc_flow_loss = F.mse_loss(pred, vel)
         self.bc_flow_optimizer.zero_grad()
         bc_flow_loss.backward()
         self.bc_flow_optimizer.step()
 
-        z = torch.randn((act.shape[0], act.shape[1]), device=self.device)
-        target_flow_actions = self.model.actor.sample_flow_step_action((obs.to(self.device),r_obs.reshape(-1, 1, self.r_obs_dim).to(self.device),),bc_flow=self.bc_flow, noise=z,flow_steps=self.flow_steps)
-        actor_actions = self.model.actor.sample_one_step_action((obs.to(self.device),r_obs.reshape(-1, 1, self.r_obs_dim).to(self.device),),noise=z)
+        z = torch.randn((act.squeeze().shape[0], act.squeeze().shape[1]), device=self.device)
+        target_flow_actions = self.model.actor.sample_flow_step_action((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),bc_flow=self.model.bc_flow, noise=z,flow_steps=self.flow_steps)
+        actor_actions = self.model.actor.sample_one_step_action((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),noise=z)
         distill_loss = F.mse_loss(actor_actions, target_flow_actions)
         ld = distill_loss.data.item()
+
+        q1, q2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=actor_actions.detach(),)
+        q_min = torch.min(torch.cat((q1, q2), 1), dim=1)[0].reshape((-1, 1))
+
         if self.distill_only:
-            loss_act = (self.alpha * distill_loss).mean()
+            loss_act = (self.alpha.to(self.device) * distill_loss).mean()
         else:
-            loss_act = (- q_min + self.alpha * distill_loss).mean()
+            loss_act = (- q_min + self.alpha.to(self.device) * distill_loss).mean()
         self.actor_optimizer.zero_grad()
         loss_act.backward()
         self.actor_optimizer.step()

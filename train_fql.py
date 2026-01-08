@@ -21,7 +21,8 @@ from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from rl_navigation import RLNavigation
-from utils.evaluation import eval_policy_fql
+from utils.explorer import ExplorerCrowdSim
+from algo.fql.eval import eval_policy
 
 from utils.models import (
     SocialCritic,
@@ -279,7 +280,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             trainer.update_target()
 
         if (i + 1) % cfg.eval.eval_interval == 0:
-            val_logs = eval_policy_fql(
+            val_logs = eval_policy(
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,
@@ -288,6 +289,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 scenario="val",
                 render=cfg.eval.val_render,
                 print_results=True,
+                device=device
             )
             if cfg.log.wandb:
                 wandb.log(
@@ -348,6 +350,7 @@ test_logs = eval_policy(
     render_type=render_type,
     path=path_v,
     print_results=True,
+    device=device
 )
 
 

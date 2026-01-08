@@ -78,7 +78,7 @@ class Model:
     h_dim = 32
     n_flow_blocks = 10
     n_flow_hidden_num = 3
-    threshold_type = "sum",
+    threshold_type = "sum"
 
 
 class Transfunc:

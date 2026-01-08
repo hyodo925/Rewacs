@@ -98,7 +98,7 @@ def grevnet_training(
 
         if not model_dir is None:
             if (m + 1) % model_save_freq == 0:
-                model.set_switching_threshold(data_th)
+                model.set_switching_threshold(data_loader[:len(data_loader)]["humans_obs"])
                 model.save_model(model_dir + f"/model_{m + 1}.pth")
                 if use_wandb:
                     wandb.log({

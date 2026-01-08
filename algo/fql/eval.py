@@ -25,6 +25,7 @@ def eval_policy(
     model,
     transfunc,
     convert_action,
+    act_dim=2,
     discount=0.9,
     render=False,
     render_type="",
@@ -36,6 +37,7 @@ def eval_policy(
     ax=None,
     output_name=None,
     print_results=False,
+    device="cpu"
 ):
     rewards = []
     sum_rewards = 0.0
@@ -71,11 +73,13 @@ def eval_policy(
         # robot_obs, human_obs = robot_obs/4., human_obs/4.
         # state = psr.state0.expand(5, 20).to(psr.device)
         while not done:
-            _, _, action = model.generate_action(
+            z = torch.randn((1, act_dim), device=device)
+            action = model.actor.sample_one_step_action(
                 (
                     humans_obs.unsqueeze(0).to(model.device),
                     robot_obs.reshape(1, 1, -1).to(model.device),
-                )
+                ),
+                noise=z,
             )
             action = (
                 action.clamp(model.actor.act_min, model.actor.act_max)
@@ -83,12 +87,11 @@ def eval_policy(
                 .data.numpy()
                 .squeeze()
             )
-            action = convert_action(action)
             # action = eval_env.robot.act(obs_r)
             # obs_pred = model.predict_obs(
             #     human_obs.reshape(1, -1).to(model.device), robot_obs.to(model.device)
             # )
-
+            action = convert_action(action)
             robot_state, human_state, reward, done, info = eval_env.step(action)
             robot_obs, humans_obs = transfunc(
                 robot_state,
