@@ -20,17 +20,17 @@ from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
-from rl_navigation import RLNavigation
+from meta_rl_navigation import MetaRLNavigation
 from utils.evaluation import eval_policy
-from utils.explorer import ExploerCrowdSim
+from utils.explorer import ExplorerCrowdSim
 from utils.models import (
+    MLPGraphConvEmbeddedGaussianIntegrator,
+    SocialActorAWAC,
     SocialCritic,
+    MetaCritic
 )
-from utils.state_integrators import (
-    EmbeddedGaussianIntegrator,
-)
-from algo.awac.trainer import AWAC
-from algo.awac.actor import SocialActorAWAC
+from utils.virtual_updater import VirtualActorUpdater
+from meta_util.meta_critic_trainer import Meta_Critic
 
 try:
     import wandb
@@ -76,18 +76,10 @@ def define_env(
 
 
 start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-    print("Using MPS")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-    print("Using CUDA")
-else:
-    device = torch.device("cpu")
-    print("Using CPU")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/awac_config.py"
+config_path = "./configs/meta_critic_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -99,7 +91,11 @@ if cfg.log.wandb:
     # wandb.tensorboard.patch(root_logdir=f"logs/{start_time_log}")
 
     run = wandb.init(
-        project=cfg.log.wandb_project, save_code=True, mode=cfg.log.wandb_mode
+        project=cfg.log.wandb_project, 
+        save_code=True,
+        mode=cfg.log.wandb_mode,
+        name=f"{start_time_log}_meta_critic_training",
+        dir=f"wandb/meta_critic_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -146,7 +142,7 @@ def convert_action(action):
     return action
 
 
-actor_integrator = EmbeddedGaussianIntegrator(
+actor_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
@@ -161,7 +157,7 @@ actor = SocialActorAWAC(
     integrator=actor_integrator,
 )
 
-critic_integrator = EmbeddedGaussianIntegrator(
+critic_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
@@ -176,9 +172,12 @@ critic = SocialCritic(
     single=False,
 )
 
-model = RLNavigation(actor=actor, critic=critic)
+meta_critic = MetaCritic(cfg.model.meta_critic_integrator_enc_hdims)
+model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 
-expl = ExploerCrowdSim(
+updater = VirtualActorUpdater()
+
+expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
     obs_dim=cfg.model.obs_dim,
@@ -194,15 +193,19 @@ expl = ExploerCrowdSim(
 use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
+buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
+meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
 
-trainer = AWAC(
+trainer = Meta_Critic(
     model=model,
     replay_buffer=buffer,
+    replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
+    meta_optimizer=meta_optimizer,
     batch_size=cfg.train.batch_size,
 )
 
@@ -213,18 +216,15 @@ expl_logs = expl.exploration_k_ep_orca(
     render=False,
 )
 
+expl_logs = expl.exploration_k_ep_orca(
+    buffer=buffer_val,
+    k=cfg.train.preliminary_exp_n,
+    # k=100,
+    render=False,
+)
 
 loss_list = []
 
-# val_logs = eval_policy(
-#     eval_env=env,
-#     model=model,
-#     transfunc=transfunc,
-#     eval_episodes=env.case_size["test"],
-#     scenario="test",
-#     render=False,
-#     print_results=True
-# )
 
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
@@ -235,6 +235,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             if not cfg.train.offline_learning:
                 expl_logs = expl.exploration_k_ep(
                     buffer=buffer,
+                    buffer_val=buffer_val,
                     model=model,
                     pbar=pbar,
                     render=False,
@@ -255,6 +256,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
+            updater=updater,
             update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )

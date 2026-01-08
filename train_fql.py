@@ -21,16 +21,16 @@ from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from rl_navigation import RLNavigation
-from utils.evaluation import eval_policy
-from utils.explorer import ExploerCrowdSim
+from utils.evaluation import eval_policy_fql
+
 from utils.models import (
     SocialCritic,
 )
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.awac.trainer import AWAC
-from algo.awac.actor import SocialActorAWAC
+from algo.fql.trainer import FQL
+from algo.fql.models import SocialActorFQL, BC_flow
 
 try:
     import wandb
@@ -76,18 +76,10 @@ def define_env(
 
 
 start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-    print("Using MPS")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-    print("Using CUDA")
-else:
-    device = torch.device("cpu")
-    print("Using CPU")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/awac_config.py"
+config_path = "./configs/fql_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -99,7 +91,11 @@ if cfg.log.wandb:
     # wandb.tensorboard.patch(root_logdir=f"logs/{start_time_log}")
 
     run = wandb.init(
-        project=cfg.log.wandb_project, save_code=True, mode=cfg.log.wandb_mode
+        project=cfg.log.wandb_project, 
+        save_code=True,
+        mode=cfg.log.wandb_mode,
+        name=f"{start_time_log}_fql_training",
+        dir=f"wandb/fql_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -146,22 +142,22 @@ def convert_action(action):
     return action
 
 
-actor_integrator = EmbeddedGaussianIntegrator(
+actor_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorAWAC(
-    cfg.model.projection_dim,
+actor = SocialActorFQL(
+    cfg.model.projection_dim + cfg.model.action_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
     h_dims=cfg.model.actor_h_dims,
     integrator=actor_integrator,
 )
 
-critic_integrator = EmbeddedGaussianIntegrator(
+critic_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
@@ -176,9 +172,25 @@ critic = SocialCritic(
     single=False,
 )
 
-model = RLNavigation(actor=actor, critic=critic)
+bc_flow_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
+    cfg.model.obs_dim,
+    cfg.model.r_obs_dim,
+    projection_dim=cfg.model.projection_dim,
+    enc_hdims=cfg.model.critic_integrator_enc_hdims,
+)
 
-expl = ExploerCrowdSim(
+bc_flow = BC_flow(
+        cfg.model.projection_dim + cfg.model.t_dim + cfg.model.x_t_dim,
+        2,
+        h_dims=[32, 100, 100],
+        integrator=bc_flow_integrator,
+    )
+
+
+model = RLNavigation(actor=actor, critic=critic, bc_flow=bc_flow)
+model.to(device)
+
+expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
     obs_dim=cfg.model.obs_dim,
@@ -197,13 +209,16 @@ buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
+bc_flow_optimizer = torch.optim.Adam(model.bc_flow.parameters(), lr=cfg.train.lr)
 
-trainer = AWAC(
+trainer = FQL(
     model=model,
     replay_buffer=buffer,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
+    bc_flow_optimizer=bc_flow_optimizer,
     batch_size=cfg.train.batch_size,
+    flow_steps=cfg.model.flow_steps,
 )
 
 expl_logs = expl.exploration_k_ep_orca(
@@ -264,7 +279,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             trainer.update_target()
 
         if (i + 1) % cfg.eval.eval_interval == 0:
-            val_logs = eval_policy(
+            val_logs = eval_policy_fql(
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,

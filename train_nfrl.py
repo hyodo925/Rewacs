@@ -12,15 +12,18 @@ import shutil
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from torch import distributions
 from torchrl.data import LazyTensorStorage, ListStorage, ReplayBuffer
 from tqdm import tqdm, trange
 
+from algo.nfrl.realnvp import RealNVPActor
+from algo.nfrl.trainer import NFMaxEnt
+from nfrl_navigation import NFRLNavigation
 from rewacs.envs import CrowdSim
 from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
-from rl_navigation import RLNavigation
 from utils.evaluation import eval_policy
 from utils.explorer import ExploerCrowdSim
 from utils.models import (
@@ -29,8 +32,6 @@ from utils.models import (
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.awac.trainer import AWAC
-from algo.awac.actor import SocialActorAWAC
 
 try:
     import wandb
@@ -87,7 +88,7 @@ else:
     print("Using CPU")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/awac_config.py"
+config_path = "./configs/nfmaxent_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -153,12 +154,18 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorAWAC(
-    cfg.model.projection_dim,
-    cfg.model.action_dim,
-    action_space=cfg.model.action_space,
-    h_dims=cfg.model.actor_h_dims,
-    integrator=actor_integrator,
+prior = distributions.MultivariateNormal(
+    torch.zeros(cfg.model.action_dim).to(device),
+    torch.eye(cfg.model.action_dim).to(device),
+)
+
+actor = RealNVPActor(
+    in_channels=cfg.model.action_dim,
+    cond_channels=cfg.model.projection_dim,
+    channels=cfg.model.actor_h_dim,
+    n_layers=cfg.model.actor_n_layers,
+    encorder=actor_integrator,
+    prior=prior,
 )
 
 critic_integrator = EmbeddedGaussianIntegrator(
@@ -176,7 +183,7 @@ critic = SocialCritic(
     single=False,
 )
 
-model = RLNavigation(actor=actor, critic=critic)
+model = NFRLNavigation(actor=actor, critic=critic).to(device)
 
 expl = ExploerCrowdSim(
     env=env,
@@ -198,7 +205,7 @@ buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 
-trainer = AWAC(
+trainer = NFMaxEnt(
     model=model,
     replay_buffer=buffer,
     actor_optimizer=actor_optimizer,

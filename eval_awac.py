@@ -1,13 +1,18 @@
+import argparse
+import configparser
+import copy
+import csv
 import datetime
 import importlib
 import json
 import os
 import random
+import shutil
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from torchrl.data import ReplayBuffer
+from torchrl.data import LazyTensorStorage, ListStorage, ReplayBuffer
 from tqdm import tqdm, trange
 
 from rewacs.envs import CrowdSim
@@ -17,12 +22,20 @@ from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from rl_navigation import RLNavigation
 from utils.evaluation import eval_policy
+from utils.explorer import ExploerCrowdSim
 from utils.models import (
-    MLPGraphConvEmbeddedGaussianIntegrator,
     SocialActorAWAC,
     SocialCritic,
 )
-from utils.trainer import AWAC
+from utils.state_integrators import (
+    EmbeddedGaussianIntegrator,
+)
+from algo.awac.trainer import AWAC
+
+try:
+    import wandb
+except ModuleNotFoundError:
+    pass
 
 
 def seed_all(seed):
@@ -104,7 +117,7 @@ def convert_action(action):
     return action
 
 
-actor_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
+actor_integrator = EmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
@@ -119,7 +132,7 @@ actor = SocialActorAWAC(
     integrator=actor_integrator,
 )
 
-critic_integrator = MLPGraphConvEmbeddedGaussianIntegrator(
+critic_integrator = EmbeddedGaussianIntegrator(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
