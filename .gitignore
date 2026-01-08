@@ -1,0 +1,33 @@
+# Python-generated files
+.python-version
+__pycache__
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+/logs/*
+!/logs/.gitkeep
+/videos/*
+!/videos/.gitkeep
+/trajs/*
+!/trajs/.gitkeep
+/trained_models/*
+!/trained_models/.gitkeep
+/wandb/*
+!/wandb/.gitkeep
+
+# Virtual environments
+.venv
+
+# VS Code
+.vscode
+
+# Other packages of files
+/flexible-config/*
+/Python-RVO2/*
+/socialforce/*
+
+upload_models_wandb_gui.py
+upload_models_wandb.py
