@@ -22,16 +22,15 @@ from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from rl_navigation import RLNavigation
 from utils.evaluation import eval_policy
-from utils.explorer import ExploerCrowdSim
+from utils.explorer import ExplorerCrowdSim
 from utils.models import (
-    SocialActorAWAC,
     SocialCritic,
 )
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
 from algo.awac.trainer import AWAC
-
+from algo.awac.actor import SocialActorAWAC
 try:
     import wandb
 except ModuleNotFoundError:
