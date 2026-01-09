@@ -20,7 +20,7 @@ from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
-from meta_rl_navigation import MetaRLNavigation
+from rl_navigation import RLNavigation
 from utils.evaluation import eval_policy
 from utils.explorer import ExplorerCrowdSim
 from utils.models import (
@@ -29,8 +29,8 @@ from utils.models import (
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.maml_awac.trainer import MAMLAWAC
-from algo.awac.actor import SocialActorAWAC
+from algo.iql.trainer import IQL
+from algo.iql.actor import SocialActorIQL
 
 try:
     import wandb
@@ -87,7 +87,7 @@ else:
     print("Using CPU")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/maml_awac_config.py"
+config_path = "./configs/iql_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -153,7 +153,7 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorAWAC(
+actor = SocialActorIQL(
     cfg.model.projection_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
@@ -176,7 +176,15 @@ critic = SocialCritic(
     single=False,
 )
 
-model = MetaRLNavigation(actor=actor, critic=critic)
+value = SocialCritic(
+    cfg.model.projection_dim,
+    1,
+    h_dims=cfg.model.critic_h_dims,
+    integrator=critic_integrator,
+    single=True,
+)
+
+model = RLNavigation(actor=actor, critic=critic, value=value)
 
 expl = ExplorerCrowdSim(
     env=env,
@@ -195,24 +203,24 @@ use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
+value_optimizer = torch.optim.Adam(model.value.parameters(), lr=cfg.train.lr)
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 
-trainer = MAMLAWAC(
+trainer = IQL(
     model=model,
     replay_buffer=buffer,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
+    value_optimizer=value_optimizer,
     batch_size=cfg.train.batch_size,
 )
 
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
-    human_num=6,
-    scenario="square_crossing",
     k=cfg.train.preliminary_exp_n,
     # k=100,
-    render=True,
+    render=False,
 )
 
 

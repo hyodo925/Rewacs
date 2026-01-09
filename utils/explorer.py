@@ -89,7 +89,7 @@ class ExplorerCrowdSim:
         return sum_return
 
     def exploration_k_ep_orca(
-        self, buffer, k=1, render=False, random_p_num=False, p_range=(1, 5)
+        self, buffer, human_num=5, scenario="square_crossing",k=1, render=False, random_p_num=False, p_range=(1, 5)
     ):
         # d_a = self.act_dim
         sum_rewards = 0
@@ -108,15 +108,16 @@ class ExplorerCrowdSim:
         timeout_cases = []
         ###############################
         for _ in tqdm(range(k), desc="Preliminary Exploration"):
-            if random_p_num:
-                p_num = np.random.randint(*p_range)
-                self.env.set_human_num(p_num)
-                # d_o = self.obs_dim * p_num
-            else:
-                d_o = self.obs_dim * self.env.human_num
-            d_ro = self.r_obs_dim
-            d_s = self.state_dim * self.env.human_num
-
+            # if random_p_num:
+            #     p_num = np.random.randint(*p_range)
+            #     self.env.set_human_num(p_num)
+            #     # d_o = self.obs_dim * p_num
+            # else:
+            #     d_o = self.obs_dim * self.env.human_num
+            # d_ro = self.r_obs_dim
+            # d_s = self.state_dim * self.env.human_num
+            # self.env.set_human_num(human_num)
+            # self.env.set_explorer_scenario(scenario)
             # Temporary buffer list
             next_obs = []
             obs = []

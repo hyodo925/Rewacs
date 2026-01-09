@@ -9,13 +9,15 @@ class RLNavigation(nn.Module):
         self,
         actor,
         critic,
-        bc_flow,
+        value=None,
+        bc_flow=None,
         device="cpu",
     ):
         super(RLNavigation, self).__init__()
 
         self.actor = actor
         self.critic = critic
+        self.value = value
         self.bc_flow = bc_flow
         self.device = device
 

@@ -9,7 +9,7 @@ class MetaRLNavigation(nn.Module):
         self,
         actor,
         critic,
-        meta_critic,
+        meta_critic=None,
         device="cpu",
     ):
         super(MetaRLNavigation, self).__init__()

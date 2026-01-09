@@ -381,6 +381,9 @@ class CrowdSim:
     def set_human_num(self, human_num):
         self.human_num = human_num
 
+    def set_explorer_scenario(self, scenario):
+        self.test_scenario = scenario
+
     def step(self, action, update=True):
         """
         Compute actions for all agents, detect collision, update environment and return (ob, reward, done, info)
