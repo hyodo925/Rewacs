@@ -20,7 +20,7 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "circle_crossing"
+    train_val_scenario = "square_crossing"
     test_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
@@ -93,7 +93,9 @@ class Train:
     actor_update_interval = 2
     target_update_interval = 1
     polyak = 0.995
-    training_alg = "MAML_AWAC"
+    training_alg = "MACAW"
+    human_nums = [6,7,8,9,10]
+    num_tasks = len(human_nums)
 
 
 class Evaluation:
@@ -105,11 +107,11 @@ class Evaluation:
 
 
 class Log:
-    wandb_project = "MAML_AWAC_training"
-    wandb_mode = "offline"
-    # wandb_mode = "online"
-    wandb = False
-    save_model = False
+    wandb_project = "MACAW_training"
+    # wandb_mode = "offline"
+    wandb_mode = "online"
+    wandb = True
+    save_model = True
 
 
 b = FlexibleConfigBuilder()

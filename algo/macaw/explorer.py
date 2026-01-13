@@ -88,6 +88,23 @@ class ExplorerCrowdSim:
 
         return sum_return
 
+    def calc_step_returns(self, rewards):
+        step_returns = []
+        for step in range(len(rewards)):
+            step_return = sum(
+                [
+                    pow(
+                        self.discount,
+                        t * self.env.robot.time_step * self.env.robot.v_pref,
+                    )
+                    * reward
+                    for t, reward in enumerate(rewards[step:])
+                ]
+            )
+            step_returns.append(step_return)
+        return step_returns
+
+
     def exploration_k_ep_orca(
         self, buffer, human_num=5, scenario="square_crossing",k=1, render=False, random_p_num=False, p_range=(1, 5)
     ):
@@ -116,8 +133,8 @@ class ExplorerCrowdSim:
             #     d_o = self.obs_dim * self.env.human_num
             # d_ro = self.r_obs_dim
             # d_s = self.state_dim * self.env.human_num
-            # self.env.set_human_num(human_num)
-            # self.env.set_explorer_scenario(scenario)
+            self.env.set_human_num(human_num)
+            self.env.set_explorer_scenario(scenario)
             # Temporary buffer list
             next_obs = []
             obs = []
@@ -186,6 +203,8 @@ class ExplorerCrowdSim:
 
             sum_returns += self.calc_returns(rwd)
 
+            mc_returns = self.calc_step_returns(rwd)
+
             # if isinstance(info, ReachGoal):
             if isinstance(info, ReachGoal) or isinstance(info, Collision):
                 for i in range(len(obs)):
@@ -199,6 +218,7 @@ class ExplorerCrowdSim:
                             "next_robot_obs": next_r_obs[i],
                             "action": act[i].reshape(-1, self.act_dim),
                             "reward": rwd[i],
+                            "mc_return": mc_returns[i],
                             "done": is_done[i],
                         }
                     )
@@ -286,7 +306,7 @@ class ExplorerCrowdSim:
             #     # integrated_states = []
             done = False
             while not done:
-                a, _, _ = model.generate_action(
+                a, _, _, _ = model.generate_action(
                     (
                         humans_obs.unsqueeze(0).to(model.device),
                         robot_obs.reshape(1, 1, -1).to(model.device),

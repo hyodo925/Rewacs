@@ -84,7 +84,7 @@ class Transfunc:
 
 class Train:
     random_seed = 17
-    offline_learning = True
+    offline_learning = False
     lr = 3e-4
     preliminary_exp_n = 200
     total_it = 10000
@@ -94,6 +94,9 @@ class Train:
     target_update_interval = 1
     polyak = 0.995
     training_alg = "AWAC"
+
+    onpolicy_finetuning = True
+    fintuning_rollout_itr = 5
 
 
 class Evaluation:
@@ -105,7 +108,7 @@ class Evaluation:
 
 
 class Log:
-    wandb_project = "AWAC_training"
+    wandb_project = "AWAC_fine_tuning"
     # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True

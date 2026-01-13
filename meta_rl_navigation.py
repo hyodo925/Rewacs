@@ -9,6 +9,7 @@ class MetaRLNavigation(nn.Module):
         self,
         actor,
         critic,
+        value=None,
         meta_critic=None,
         device="cpu",
     ):
@@ -16,6 +17,7 @@ class MetaRLNavigation(nn.Module):
 
         self.actor = actor
         self.critic = critic
+        self.value = value
         self.meta_critic = meta_critic
         self.device = device
 

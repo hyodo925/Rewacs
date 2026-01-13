@@ -22,15 +22,13 @@ from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from meta_rl_navigation import MetaRLNavigation
 from utils.evaluation import eval_policy
-from utils.explorer import ExplorerCrowdSim
-from utils.models import (
-    SocialCritic,
-)
+from algo.macaw.explorer import ExplorerCrowdSim
+from algo.macaw.critic import  SocialCritic
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
 from algo.macaw.trainer import MACAW
-from algo.awac.actor import SocialActorAWAC
+from algo.macaw.actor import SocialActorMACAW
 
 try:
     import wandb
@@ -99,7 +97,11 @@ if cfg.log.wandb:
     # wandb.tensorboard.patch(root_logdir=f"logs/{start_time_log}")
 
     run = wandb.init(
-        project=cfg.log.wandb_project, save_code=True, mode=cfg.log.wandb_mode
+        project=cfg.log.wandb_project, 
+        save_code=True,
+        mode=cfg.log.wandb_mode,
+        name=f"{start_time_log}_macaw_training",
+        dir=f"wandb/macaw_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -153,12 +155,14 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorAWAC(
+actor = SocialActorMACAW(
     cfg.model.projection_dim,
+    # cfg.model.projection_dim + cfg.train.num_tasks,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
     h_dims=cfg.model.actor_h_dims,
     integrator=actor_integrator,
+    use_adv_head=True,
 )
 
 critic_integrator = EmbeddedGaussianIntegrator(
@@ -176,7 +180,16 @@ critic = SocialCritic(
     single=False,
 )
 
-model = MetaRLNavigation(actor=actor, critic=critic)
+value = SocialCritic(
+    cfg.model.projection_dim,
+    # cfg.model.projection_dim + cfg.train.num_tasks,
+    1,
+    h_dims=cfg.model.critic_h_dims,
+    integrator=critic_integrator,
+    single=True,
+)
+
+model = MetaRLNavigation(actor=actor, critic=critic, value=value)
 
 expl = ExplorerCrowdSim(
     env=env,
@@ -195,25 +208,36 @@ use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
+value_optimizer = torch.optim.Adam(model.value.parameters(), lr=cfg.train.lr)
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 
+
+tasks = []
+human_nums = cfg.train.human_nums
+for i in range(cfg.train.num_tasks):
+    buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
+    expl_logs = expl.exploration_k_ep_orca(
+        buffer=buffer,
+        human_num=human_nums[i],
+        scenario="square_crossing",
+        k=cfg.train.preliminary_exp_n,
+        # k=100,
+        render=False,
+    )
+    tasks.append(buffer)
+
+
 trainer = MACAW(
     model=model,
-    replay_buffer=buffer,
+    tasks=tasks,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
+    value_optimizer=value_optimizer,
     batch_size=cfg.train.batch_size,
+    num_tasks=cfg.train.num_tasks,
 )
 
-expl_logs = expl.exploration_k_ep_orca(
-    buffer=buffer,
-    human_num=6,
-    scenario="square_crossing",
-    k=cfg.train.preliminary_exp_n,
-    # k=100,
-    render=True,
-)
 
 
 loss_list = []
@@ -257,13 +281,13 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
-            update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
+            # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
         # total_it += 1
-        if ((i + 1) % cfg.train.target_update_interval) == 0:
-            trainer.update_target()
+        # if ((i + 1) % cfg.train.target_update_interval) == 0:
+        #     trainer.update_target()
 
         if (i + 1) % cfg.eval.eval_interval == 0:
             val_logs = eval_policy(

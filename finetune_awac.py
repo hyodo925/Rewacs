@@ -99,8 +99,13 @@ if cfg.log.wandb:
     # wandb.tensorboard.patch(root_logdir=f"logs/{start_time_log}")
 
     run = wandb.init(
-        project=cfg.log.wandb_project, save_code=True, mode=cfg.log.wandb_mode
+        project=cfg.log.wandb_project, 
+        save_code=True,
+        mode=cfg.log.wandb_mode,
+        name=f"{start_time_log}_awac_finetuning",
+        dir=f"wandb/awac_finetuning",
     )
+
     run.config.update(config.b.to_wandb_dict(cfg))
 
     results_log_columns = [
@@ -130,7 +135,7 @@ seed_all(cfg.train.random_seed)
 
 #################################
 # Settings
-run_dir = "wandb/awac_training/wandb/run-20251224_153907-80vjzb47"
+run_dir = "wandb/awac_training/wandb/run-20260113_130327-zgc57h94"
 
 config_path = os.path.join(run_dir, "files/config.py")
 
@@ -216,12 +221,13 @@ trainer = AWAC(
 
 model.load_model(model_path)
 
-# expl_logs = expl.exploration_k_ep_orca(
-#     buffer=buffer,
-#     k=cfg.train.preliminary_exp_n,
-#     # k=100,
-#     render=False,
-# )
+if not cfg.train.onpolicy_finetuning:
+    expl_logs = expl.exploration_k_ep_orca(
+        buffer=buffer,
+        k=cfg.train.preliminary_exp_n,
+        # k=100,
+        render=False,
+    )
 
 
 loss_list = []
@@ -241,14 +247,15 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
     for i, ch in enumerate(pbar):
         with torch.no_grad():
             # if i < 1000:
-
+            
             if not cfg.train.offline_learning:
-                expl_logs = expl.exploration_k_ep(
-                    buffer=buffer,
-                    model=model,
-                    pbar=pbar,
-                    render=False,
-                )
+                for j in range(cfg.train.fintuning_rollout_itr):
+                    expl_logs = expl.exploration_k_ep(
+                        buffer=buffer,
+                        model=model,
+                        pbar=pbar,
+                        render=False,
+                    )
 
                 if cfg.log.wandb:
                     run.log(
