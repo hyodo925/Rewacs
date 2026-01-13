@@ -106,10 +106,10 @@ class Evaluation:
 
 class Log:
     wandb_project = "TD3_BC_training"
-    wandb_mode = "offline"
-    # wandb_mode = "online"
-    wandb = False
-    save_model = False
+    # wandb_mode = "offline"
+    wandb_mode = "online"
+    wandb = True
+    save_model =True
 
 
 b = FlexibleConfigBuilder()

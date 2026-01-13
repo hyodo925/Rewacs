@@ -100,7 +100,11 @@ if cfg.log.wandb:
     # wandb.tensorboard.patch(root_logdir=f"logs/{start_time_log}")
 
     run = wandb.init(
-        project=cfg.log.wandb_project, save_code=True, mode=cfg.log.wandb_mode
+        project=cfg.log.wandb_project, 
+        save_code=True,
+        mode=cfg.log.wandb_mode,
+        name=f"{start_time_log}_nfrl_training",
+        dir=f"wandb/nfrl_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 

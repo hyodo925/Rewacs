@@ -60,8 +60,7 @@ def grevnet_training(
     model_save_freq=100,
     batch_size=100,
     data_th=None,
-    writer=None,
-    use_wandb = False,
+    data_for_logging=False,
 ):
     for m in tqdm(range(epoch_num), desc="Flow training"):
         cnt = 0
@@ -100,18 +99,21 @@ def grevnet_training(
             if (m + 1) % model_save_freq == 0:
                 model.set_switching_threshold(data_loader[:len(data_loader)]["humans_obs"])
                 model.save_model(model_dir + f"/model_{m + 1}.pth")
-                if use_wandb:
-                    wandb.log({
-                        "threshold": data_th
-                    })
+                if data_for_logging is not None:
+                    data_for_logging.log(
+                        {
+                            "threshold": data_th,
+                        },
+                        step = m + 1,
+                    )
 
-        if writer != None:
-            writer.add_scalar("loss/flow", lf / cnt, m + 1)
-            if use_wandb:
-                wandb.log({
-                    "loss": lf / cnt,
-                    "epoch": m+1,
-                })
+        if data_for_logging is not None:
+            data_for_logging.log(
+                {
+                    "loss/flow": lf / num_batches,
+                },
+                step = m + 1,
+            )
 
 
 

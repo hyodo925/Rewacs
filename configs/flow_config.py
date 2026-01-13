@@ -111,8 +111,8 @@ class Evaluation:
 
 class Log:
     wandb_project = "Switching_Administrator_training"
-    wandb_mode = "offline"
-    # wandb_mode = "online"
+    # wandb_mode = "offline"
+    wandb_mode = "online"
     wandb = True
     save_model = True
 

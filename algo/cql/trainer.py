@@ -54,8 +54,8 @@ class CQL:
         self.target_entropy = -np.prod(self.action_dim).item()
         self.cql_n_actions = 10
         self.alpha_multiplier = 1.0
-        self.cql_clip_diff_min = float("inf")
-        self.cql_clip_diff_max = float("-inf")
+        self.cql_clip_diff_min = float("-inf")
+        self.cql_clip_diff_max = float("inf")
 
         if self.use_automatic_entropy_tuning:
             self.log_alpha = Scalar(0.0)
@@ -266,12 +266,12 @@ class CQL:
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
-            lalpha = loss_critic.data.item()
+            lalpha = alpha_loss.data.item()
 
         self.actor_optimizer.zero_grad()
         loss_act.backward()
         self.actor_optimizer.step()
-        la = loss_critic.data.item()
+        la = loss_act.data.item()
 
         self.critic_optimizer.zero_grad()
         loss_critic.backward()

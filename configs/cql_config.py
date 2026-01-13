@@ -20,7 +20,7 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "circle_crossing"
+    train_val_scenario = "square_crossing"
     test_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
@@ -107,10 +107,10 @@ class Evaluation:
 
 class Log:
     wandb_project = "CQL_training"
-    wandb_mode = "offline"
-    # wandb_mode = "online"
-    wandb = False
-    save_model = False
+    # wandb_mode = "offline"
+    wandb_mode = "online"
+    wandb = True
+    save_model = True
 
 
 b = FlexibleConfigBuilder()

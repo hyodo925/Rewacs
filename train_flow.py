@@ -91,7 +91,11 @@ if cfg.log.wandb:
     # wandb.tensorboard.patch(root_logdir=f"logs/{start_time_log}")
 
     run = wandb.init(
-        project=cfg.log.wandb_project, save_code=True, mode=cfg.log.wandb_mode
+        project=cfg.log.wandb_project, 
+        save_code=True,
+        mode=cfg.log.wandb_mode,
+        name=f"{start_time_log}_switching_administrator_training",
+        dir=f"wandb/Switching_Administrator_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -196,6 +200,7 @@ grevnet_training(
     epoch_num=epoch_num,
     model_dir=trained_models_dir ,
     model_save_freq=cfg.eval.eval_interval,
+    data_for_logging= run if cfg.log.wandb else None,
     # data_th=data_for_set_th,
 )
 
