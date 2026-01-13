@@ -102,7 +102,7 @@ def grevnet_training(
                 if data_for_logging is not None:
                     data_for_logging.log(
                         {
-                            "threshold": data_th,
+                            "threshold": data_th.data.item(),
                         },
                         step = m + 1,
                     )
