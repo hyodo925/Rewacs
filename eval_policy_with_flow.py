@@ -80,7 +80,7 @@ def define_env(
 # Settings
 run_dir = "wandb/awac_training/wandb/run-20260113_130327-zgc57h94"
 
-config_path = os.path.join(run_dir, "files/config.py")
+config_path = os.path.join("configs/awac_config.py")
 
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 #################################
@@ -91,9 +91,9 @@ flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260113_141037
 
 flow_config_path = os.path.join(flow_run_dir, "files/config.py")
 
-flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_400.pth")
+flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth")
 
-render = True
+render = False
 render_type = "video"
 #################################
 

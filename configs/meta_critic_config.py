@@ -107,8 +107,8 @@ class Evaluation:
 
 class Log:
     wandb_project = "Meta_Critic_training"
-    wandb_mode = "offline"
-    # wandb_mode = "online"
+    # wandb_mode = "offline"
+    wandb_mode = "online"
     wandb = True
     save_model = True
 

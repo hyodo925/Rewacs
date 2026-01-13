@@ -71,7 +71,7 @@ def eval_policy(
         # robot_obs, human_obs = robot_obs/4., human_obs/4.
         # state = psr.state0.expand(5, 20).to(psr.device)
         while not done:
-            _, _, action, _ = model.generate_action(
+            _, _, action, _ = model.generate_action_feature(
                 (
                     humans_obs.unsqueeze(0).to(model.device),
                     robot_obs.reshape(1, 1, -1).to(model.device),

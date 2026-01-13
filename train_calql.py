@@ -20,17 +20,13 @@ from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
-from meta_rl_navigation import MetaRLNavigation
+from rl_navigation import RLNavigation
 from utils.evaluation import eval_policy
-from utils.explorer import ExplorerCrowdSim
-from utils.models import (
-    SocialCritic,
-)
-from utils.state_integrators import (
-    EmbeddedGaussianIntegrator,
-)
-from algo.maml_awac.trainer import MAMLAWAC
-from algo.awac.actor import SocialActorAWAC
+from algo.calql.explorer import ExplorerCrowdSim
+from algo.calql.critic import SocialCritic
+from algo.calql.integrator import EmbeddedGaussianIntegrator
+from algo.calql.trainer import CalQL
+from algo.calql.actor import SocialActorCalQL
 
 try:
     import wandb
@@ -87,7 +83,7 @@ else:
     print("Using CPU")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/maml_awac_config.py"
+config_path = "./configs/calql_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -102,8 +98,8 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_maml_awac_training",
-        dir=f"wandb/maml_awac_training",
+        name=f"{start_time_log}_calql_training",
+        dir=f"wandb/calql_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -157,7 +153,7 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorAWAC(
+actor = SocialActorCalQL(
     cfg.model.projection_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
@@ -180,7 +176,8 @@ critic = SocialCritic(
     single=False,
 )
 
-model = MetaRLNavigation(actor=actor, critic=critic)
+
+model = RLNavigation(actor=actor, critic=critic,)
 
 expl = ExplorerCrowdSim(
     env=env,
@@ -199,32 +196,29 @@ use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
+alpha_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 
-
-
-tasks = []
-human_nums = cfg.train.human_nums
-for i in range(cfg.train.num_tasks):
-    buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        human_num=human_nums[i],
-        scenario="square_crossing",
-        k=cfg.train.preliminary_exp_n,
-        # k=100,
-        render=False,
-    )
-    tasks.append(buffer)
-
-trainer = MAMLAWAC(
+trainer = CalQL(
     model=model,
-    tasks=tasks,
+    replay_buffer=buffer,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
+    alpha_optimizer=alpha_optimizer,
     batch_size=cfg.train.batch_size,
+    action_dim=cfg.model.action_dim,
+    policy_lr=cfg.train.lr,
+    qf_lr=cfg.train.qf_lr,
 )
+
+expl_logs = expl.exploration_k_ep_orca(
+    buffer=buffer,
+    k=cfg.train.preliminary_exp_n,
+    # k=100,
+    render=False,
+)
+
 
 loss_list = []
 
@@ -267,7 +261,8 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
-            # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
+            current_it=i,
+            total_it=cfg.train.total_it,
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 

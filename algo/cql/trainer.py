@@ -54,8 +54,8 @@ class CQL:
         self.target_entropy = -np.prod(self.action_dim).item()
         self.cql_n_actions = 10
         self.alpha_multiplier = 1.0
-        self.cql_clip_diff_min = float("-inf")
-        self.cql_clip_diff_max = float("inf")
+        self.cql_clip_diff_min = float("inf")
+        self.cql_clip_diff_max = float("-inf")
 
         if self.use_automatic_entropy_tuning:
             self.log_alpha = Scalar(0.0)

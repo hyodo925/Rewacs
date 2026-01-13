@@ -24,7 +24,11 @@ class MetaRLNavigation(nn.Module):
         return super().to(device)
 
     def generate_action(self, state):
-        action, log_prob, mean, _ = self.actor.sample(state)
+        action, log_prob, mean  = self.actor.sample(state)
+        return action, log_prob, mean 
+    
+    def generate_action_feature(self, state):
+        action, log_prob, mean, _  = self.actor.sample(state)
         return action, log_prob, mean, _
 
     def save_model(self, path):

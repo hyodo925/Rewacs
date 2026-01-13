@@ -20,7 +20,7 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "circle_crossing"
+    train_val_scenario = "square_crossing"
     test_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
@@ -86,6 +86,7 @@ class Train:
     random_seed = 17
     offline_learning = True
     lr = 3e-4
+    qf_lr = 3e-4
     preliminary_exp_n = 200
     total_it = 10000
     batch_size = 100
@@ -93,9 +94,7 @@ class Train:
     actor_update_interval = 2
     target_update_interval = 1
     polyak = 0.995
-    human_nums = [6,7,8,9,10]
-    num_tasks = len(human_nums)
-    training_alg = "MAML_AWAC"
+    training_alg = "CalQL"
 
 
 class Evaluation:
@@ -107,7 +106,7 @@ class Evaluation:
 
 
 class Log:
-    wandb_project = "MAML_AWAC_training"
+    wandb_project = "CalQL_training"
     # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True

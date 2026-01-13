@@ -214,13 +214,15 @@ trainer = MetaCriticAWAC(
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     k=cfg.train.preliminary_exp_n,
+    scenario="square_crossing",
     # k=100,
     render=False,
 )
 
-expl_logs = expl.exploration_k_ep_orca(
+expl_logs_val = expl.exploration_k_ep_orca(
     buffer=buffer_val,
     k=cfg.train.preliminary_exp_n,
+    scenario="circle_crossing",
     # k=100,
     render=False,
 )

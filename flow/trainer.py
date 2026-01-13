@@ -54,6 +54,7 @@ def flow_training(
 def grevnet_training(
     model,
     data_loader,
+    validation,
     flow_optimizer,
     epoch_num=500,
     model_dir=None,
@@ -96,6 +97,7 @@ def grevnet_training(
         # print(f"ID_ratio: {false_ratio:.2%}")
 
         if not model_dir is None:
+            model.eval(data_loader,validation)
             if (m + 1) % model_save_freq == 0:
                 model.set_switching_threshold(data_loader[:len(data_loader)]["humans_obs"])
                 model.save_model(model_dir + f"/model_{m + 1}.pth")

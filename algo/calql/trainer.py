@@ -12,7 +12,7 @@ class Scalar(nn.Module):
 
     def forward(self) -> nn.Parameter:
         return self.constant
-class CQL:
+class CalQL:
     def __init__(
         self,
         model,
@@ -54,8 +54,9 @@ class CQL:
         self.target_entropy = -np.prod(self.action_dim).item()
         self.cql_n_actions = 10
         self.alpha_multiplier = 1.0
-        self.cql_clip_diff_min = float("inf")
-        self.cql_clip_diff_max = float("-inf")
+        self.cql_clip_diff_min = float("-inf")
+        self.cql_clip_diff_max = float("inf")
+        self._calibration_enabled = True
 
         if self.use_automatic_entropy_tuning:
             self.log_alpha = Scalar(0.0)
@@ -77,7 +78,7 @@ class CQL:
 
     def update(self, current_it, total_it,  data_for_logging=None):
         sample = self.replay_buffer.sample(self.batch_size)
-        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+        obs, next_obs, r_obs, next_r_obs, act, rwd, mc_returns, done = list(sample.values())
         act_target, log_prob, _ = self.model.actor.sample(
             (
                 obs.to(self.device),
@@ -182,6 +183,32 @@ class CQL:
             cql_next_actions
         )
 
+        # Calibration
+        lower_bounds = mc_returns.reshape(-1, 1).repeat(
+            1, cql_q1_current_actions.shape[1]
+        )
+
+        # num_vals = torch.sum(lower_bounds == lower_bounds)
+        # bound_rate_cql_q1_current_actions = (
+        #     torch.sum(cql_q1_current_actions < lower_bounds) / num_vals
+        # )
+        # bound_rate_cql_q2_current_actions = (
+        #     torch.sum(cql_q2_current_actions < lower_bounds) / num_vals
+        # )
+        # bound_rate_cql_q1_next_actions = (
+        #     torch.sum(cql_q1_next_actions < lower_bounds) / num_vals
+        # )
+        # bound_rate_cql_q2_next_actions = (
+        #     torch.sum(cql_q2_next_actions < lower_bounds) / num_vals
+        # )
+
+        """ Cal-QL: bound Q-values with MC return-to-go """
+        if self._calibration_enabled:
+            cql_q1_current_actions = torch.maximum(cql_q1_current_actions, lower_bounds.unsqueeze(-1))
+            cql_q2_current_actions = torch.maximum(cql_q2_current_actions, lower_bounds.unsqueeze(-1))
+            cql_q1_next_actions = torch.maximum(cql_q1_next_actions, lower_bounds.unsqueeze(-1))
+            cql_q2_next_actions = torch.maximum(cql_q2_next_actions, lower_bounds.unsqueeze(-1))
+
         cql_cat_q1 = torch.cat(
             [
                 cql_q1_rand,
@@ -266,12 +293,12 @@ class CQL:
             self.alpha_optimizer.zero_grad()
             alpha_loss.backward()
             self.alpha_optimizer.step()
-            lalpha = loss_critic.data.item()
+            lalpha = alpha_loss.data.item()
 
         self.actor_optimizer.zero_grad()
         loss_act.backward()
         self.actor_optimizer.step()
-        la = loss_critic.data.item()
+        la = loss_act.data.item()
 
         self.critic_optimizer.zero_grad()
         loss_critic.backward()

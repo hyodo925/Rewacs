@@ -36,7 +36,7 @@ class Simulation:
 
     square_width = 20
     circle_radius = 4
-    human_num = 5
+    human_num = 10
     nonstop_human = False
     centralized_planning = True
     random_p_num = False

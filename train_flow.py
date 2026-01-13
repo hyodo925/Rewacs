@@ -164,9 +164,19 @@ expl = ExplorerCrowdSim(
 )
 
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity),sampler=SamplerWithoutReplacement())
+buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity),sampler=SamplerWithoutReplacement())
 
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
+    scenario="square_crossing",
+    k=cfg.train.preliminary_exp_n,
+    # k=100,
+    render=False,
+)
+
+expl_logs = expl.exploration_k_ep_orca(
+    buffer=buffer_val,
+    scenario="circle_crossing",
     k=cfg.train.preliminary_exp_n,
     # k=100,
     render=False,
@@ -196,6 +206,7 @@ flow_optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 grevnet_training(
     model=model,
     data_loader=buffer,
+    validation=buffer_val,
     flow_optimizer=flow_optimizer,
     epoch_num=epoch_num,
     model_dir=trained_models_dir ,

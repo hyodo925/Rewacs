@@ -76,13 +76,13 @@ def define_env(
 
 #################################
 # Settings
-run_dir = "wandb/run-20251014_003344-b96df3ej"
+run_dir = "wandb/awac_training/wandb/run-20260113_130327-zgc57h94"
 
 config_path = os.path.join(run_dir, "files/config.py")
 
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
-render = True
+render = False
 render_type = "video"
 #################################
 

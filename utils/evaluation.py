@@ -68,6 +68,8 @@ def eval_policy(
             robot_state,
             human_state,
         )
+        eval_env.set_human_num(5)
+        eval_env.set_explorer_scenario("circle_crossing")
 
         # robot_obs, human_obs = robot_obs/4., human_obs/4.
         # state = psr.state0.expand(5, 20).to(psr.device)

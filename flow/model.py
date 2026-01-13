@@ -154,6 +154,10 @@ class GraphSituationFlow(nn.Module):
                 return torch.mean( torch.sum(0.5 * torch.sum(z**2, dim=(2,)), dim=(1,)) - torch.sum(log_det_j, dim=(1,)) )
         else:
             return torch.mean(0.5 * torch.sum(z**2, dim=(1,)) - log_det_j) / (z.shape[1])
+        
+    def eval(train_data, val_data):
+        pass
+
 
     def to(self, device):
         super().to(device)

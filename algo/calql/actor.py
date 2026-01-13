@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from .utils import extend_and_repeat
 
-class SocialActorCQL(nn.Module):
+class SocialActorCalQL(nn.Module):
     def __init__(
         self,
         D,
