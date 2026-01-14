@@ -11,6 +11,7 @@ class MetaRLNavigation(nn.Module):
         critic,
         value=None,
         meta_critic=None,
+        bc_flow=None,
         device="cpu",
     ):
         super(MetaRLNavigation, self).__init__()
@@ -19,6 +20,7 @@ class MetaRLNavigation(nn.Module):
         self.critic = critic
         self.value = value
         self.meta_critic = meta_critic
+        self.bc_flow = bc_flow
         self.device = device
 
     def to(self, device):
@@ -32,6 +34,10 @@ class MetaRLNavigation(nn.Module):
     def generate_action_feature(self, state):
         action, log_prob, mean, _  = self.actor.sample(state)
         return action, log_prob, mean, _
+    
+    def generate_action_one_step(self, state, noise):
+        action, _  = self.actor.sample_one_step_action(state, noise)
+        return action, _
 
     def save_model(self, path):
         torch.save(self.state_dict(), path)

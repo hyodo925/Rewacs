@@ -1,30 +1,23 @@
+import numpy as np
 import torch as torch
 import torch.nn as nn
+from .utils import extend_and_repeat
 
-class MetaCriticNet(nn.Module):
-    def __init__(self, hidden_dim):
-        super(MetaCriticNet, self).__init__()
-        self.fc1 = nn.Linear(hidden_dim,100)
-        self.fc2 = nn.Linear(100,100)
-        self.fc3 = nn.Linear(100,1)
-    def forward(self, x):
-        x = torch.relu(self.fc1(x))
-        x = torch.relu(self.fc2(x))
-        x = nn.functional.softplus(self.fc3(x))
-        #x = nn.functional.tanh(self.fc3(x))
-        return torch.mean(x)
-    
-class MetaCriticGraphNet(nn.Module):
+class SocialCritic(nn.Module):
     def __init__(
         self, D, d, h_dims=[256], integrator=None, activation="leaky_relu", single=False
     ):
         super().__init__()
         self.integrator = integrator
         self.single = single
-        self.net1 = self.make_mlp([D] + h_dims + [d], activation=activation)
+        self.net1 = self.make_mlp(
+            [D] + h_dims + [d], activation=activation, last_act=True
+        )
 
         if not single:
-            self.net2 = self.make_mlp([D] + h_dims + [d], activation=activation)
+            self.net2 = self.make_mlp(
+                [D] + h_dims + [d], activation=activation, last_act=True
+            )
 
         # self.apply(weights_init_)
 
@@ -41,11 +34,19 @@ class MetaCriticGraphNet(nn.Module):
         net = nn.Sequential(*layers)
         return net
 
-    def forward(self, obs, act=None, other_output=None):
-        # with torch.no_grad():
+    def forward(self, obs, act=None):
+        if act is not None and act.ndim == 3:
+            obs = extend_and_repeat(obs, dim=1, repeat=act.shape[1])
         if self.integrator != None:
             data = self.integrator(*obs)
-        data = torch.cat([data, act, other_output], 1)
+
+        if not self.single:
+            data = torch.cat([data, act], -1)
+
         out1 = self.net1(data)
-        return torch.mean(out1)
-    
+
+        if not self.single:
+            out2 = self.net2(data)
+            return out1, out2
+        else:
+            return out1

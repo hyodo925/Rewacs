@@ -21,14 +21,17 @@ from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from meta_rl_navigation import MetaRLNavigation
-from utils.evaluation import eval_policy
-from algo.macaw.explorer import ExplorerCrowdSim
-from algo.macaw.critic import  SocialCritic
+from algo.meta_critic.eval import eval_policy
+from utils.explorer import ExplorerCrowdSim
+from utils.models import (
+    SocialCritic,
+)
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.macaw.trainer import MACAW
-from algo.macaw.actor import SocialActorMACAW
+from algo.meta_critic.actor import SocialActorMetaCriticAWAC
+from algo.meta_critic.trainer_hotplug import MetaCriticAWAC
+from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:
     import wandb
@@ -74,18 +77,10 @@ def define_env(
 
 
 start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-    print("Using MPS")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-    print("Using CUDA")
-else:
-    device = torch.device("cpu")
-    print("Using CPU")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/macaw_config.py"
+config_path = "./configs/meta_critic_awac_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -100,8 +95,8 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_macaw_training",
-        dir=f"wandb/macaw_training",
+        name=f"{start_time_log}_meta_critic_awac_training",
+        dir=f"wandb/meta_critic_awac_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -155,14 +150,12 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorMACAW(
+actor = SocialActorMetaCriticAWAC(
     cfg.model.projection_dim,
-    # cfg.model.projection_dim + cfg.train.num_tasks,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
     h_dims=cfg.model.actor_h_dims,
     integrator=actor_integrator,
-    use_adv_head=cfg.model.use_adv_head,
 )
 
 critic_integrator = EmbeddedGaussianIntegrator(
@@ -180,18 +173,17 @@ critic = SocialCritic(
     single=False,
 )
 
-value = SocialCritic(
-    cfg.model.projection_dim,
-    # cfg.model.projection_dim + cfg.train.num_tasks,
-    1,
-    h_dims=cfg.model.critic_h_dims,
-    integrator=critic_integrator,
-    single=True,
-)
+meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
+# meta_critic = MetaCriticGraphNet(    
+#     cfg.model.projection_dim + cfg.model.action_dim + cfg.model.other_output_dim,
+#     1,
+#     h_dims=cfg.model.critic_h_dims,
+#     integrator=critic_integrator,
+#     single=False,)
+model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 
-model = MetaRLNavigation(actor=actor, critic=critic, value=value)
-model.to(device)
-
+# updater = VirtualActorUpdater()
+# updater = Hot_Plug()
 expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
@@ -208,50 +200,50 @@ expl = ExplorerCrowdSim(
 use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
+buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
-value_optimizer = torch.optim.Adam(model.value.parameters(), lr=cfg.train.lr)
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
+meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
 
+# trainer = MetaCriticAWAC(
+#     model=model,
+#     replay_buffer=buffer,
+#     replay_buffer_val=buffer_val,
+#     actor_optimizer=actor_optimizer,
+#     critic_optimizer=critic_optimizer,
+#     meta_critic_optimizer=meta_optimizer,
+#     batch_size=cfg.train.batch_size,
+# )
 
-tasks = []
-human_nums = cfg.train.human_nums
-for i in range(cfg.train.num_tasks):
-    buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        human_num=human_nums[i],
-        scenario="square_crossing",
-        k=cfg.train.preliminary_exp_n,
-        # k=100,
-        render=False,
-    )
-    tasks.append(buffer)
-
-
-trainer = MACAW(
+trainer = MetaCriticAWAC(
     model=model,
-    tasks=tasks,
+    replay_buffer=buffer,
+    replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
-    value_optimizer=value_optimizer,
+    meta_critic_optimizer=meta_optimizer,
     batch_size=cfg.train.batch_size,
-    num_tasks=cfg.train.num_tasks,
 )
 
+expl_logs = expl.exploration_k_ep_orca(
+    buffer=buffer,
+    k=cfg.train.preliminary_exp_n,
+    scenario="square_crossing",
+    # k=100,
+    render=False,
+)
 
+expl_logs_val = expl.exploration_k_ep_orca(
+    buffer=buffer_val,
+    k=cfg.train.preliminary_exp_n,
+    scenario="circle_crossing",
+    # k=100,
+    render=False,
+)
 
 loss_list = []
 
-# val_logs = eval_policy(
-#     eval_env=env,
-#     model=model,
-#     transfunc=transfunc,
-#     eval_episodes=env.case_size["test"],
-#     scenario="test",
-#     render=False,
-#     print_results=True
-# )
 
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
@@ -282,13 +274,12 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
-            # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
         # total_it += 1
-        # if ((i + 1) % cfg.train.target_update_interval) == 0:
-        #     trainer.update_target()
+        if ((i + 1) % cfg.train.target_update_interval) == 0:
+            trainer.update_target()
 
         if (i + 1) % cfg.eval.eval_interval == 0:
             val_logs = eval_policy(

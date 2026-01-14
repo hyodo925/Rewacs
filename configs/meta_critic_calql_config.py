@@ -74,8 +74,8 @@ class Model:
 
     actor_integrator_enc_hdims = [64]
     critic_integrator_enc_hdims = [64]
-
-    use_adv_head = False
+    meta_critic_integrator_enc_hdims = 127
+    other_output_dim = 100
 
 
 class Transfunc:
@@ -88,16 +88,17 @@ class Train:
     random_seed = 17
     offline_learning = True
     lr = 3e-4
-    preliminary_exp_n = 200
+    preliminary_exp_n = 10
     total_it = 10000
     batch_size = 100
     buffer_capacity = 100000
     actor_update_interval = 2
     target_update_interval = 1
     polyak = 0.995
-    training_alg = "MACAW"
-    human_nums = [6,7,8,9,10]
-    num_tasks = len(human_nums)
+    training_alg = "Meta_Critic_CalQL"
+
+    onpolicy_finetuning = True
+    fintuning_rollout_itr = 5
 
 
 class Evaluation:
@@ -109,7 +110,7 @@ class Evaluation:
 
 
 class Log:
-    wandb_project = "MACAW_training"
+    wandb_project = "Meta_Critic_CalQL_training"
     # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True

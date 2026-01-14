@@ -126,6 +126,12 @@ if cfg.log.wandb:
 
 seed_all(cfg.train.random_seed)
 
+#################################
+# Settings
+run_dir = "wandb/meta_critic_training/wandb/run-20260114_153520-0hq15hd9"
+
+model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
+
 ##################################################################################
 # load env
 env, robot = define_env(debug=True, config=config)
@@ -174,11 +180,15 @@ critic = SocialCritic(
     single=False,
 )
 
-meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
+# meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
+meta_critic = MetaCriticGraphNet(    
+    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.other_output_dim,
+    1,
+    h_dims=cfg.model.critic_h_dims,
+    integrator=critic_integrator,
+    single=False,)
 model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 
-# updater = VirtualActorUpdater()
-# updater = Hot_Plug()
 expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
@@ -211,21 +221,15 @@ trainer = MetaCriticAWAC(
     batch_size=cfg.train.batch_size,
 )
 
-expl_logs = expl.exploration_k_ep_orca(
-    buffer=buffer,
-    k=cfg.train.preliminary_exp_n,
-    scenario="square_crossing",
-    # k=100,
-    render=False,
-)
+model.load_model(model_path)
 
-expl_logs_val = expl.exploration_k_ep_orca(
-    buffer=buffer_val,
-    k=cfg.train.preliminary_exp_n,
-    scenario="circle_crossing",
-    # k=100,
-    render=False,
-)
+if not cfg.train.onpolicy_finetuning:
+    expl_logs = expl.exploration_k_ep_orca(
+        buffer=buffer,
+        k=cfg.train.preliminary_exp_n,
+        # k=100,
+        render=False,
+    )
 
 loss_list = []
 
@@ -237,12 +241,13 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             # if i < 1000:
 
             if not cfg.train.offline_learning:
-                expl_logs = expl.exploration_k_ep(
-                    buffer=buffer,
-                    model=model,
-                    pbar=pbar,
-                    render=False,
-                )
+                for j in range(cfg.train.fintuning_rollout_itr):
+                    expl_logs = expl.exploration_k_ep(
+                        buffer=buffer,
+                        model=model,
+                        pbar=pbar,
+                        render=False,
+                    )
 
                 if cfg.log.wandb:
                     run.log(
@@ -258,7 +263,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                         step=i + 1,
                     )
 
-        trainer.update(
+        trainer.finetune(
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
