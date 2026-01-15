@@ -106,7 +106,7 @@ class ExplorerCrowdSim:
 
 
     def exploration_k_ep_orca(
-        self, buffer, human_num=5, scenario="square_crossing",k=1, render=False, random_p_num=False, p_range=(1, 5)
+        self, buffer, human_num, scenario, k=1, render=False, random_p_num=False, p_range=(1, 5)
     ):
         # d_a = self.act_dim
         sum_rewards = 0
@@ -320,6 +320,208 @@ class ExplorerCrowdSim:
                 )
 
                 a = self.convert_action(a)
+
+                obs.append(torch.as_tensor(humans_obs.reshape(-1), dtype=torch.float32))
+
+                r_obs.append(torch.as_tensor(robot_obs, dtype=torch.float32))
+
+                robot_state, human_state, r, done, info = self.env.step(a)
+
+                robot_obs, humans_obs = self.transfunc(
+                    robot_state,
+                    human_state,
+                )
+
+                act.append(torch.as_tensor(a, dtype=torch.float32))
+
+                next_obs.append(
+                    torch.as_tensor(humans_obs.reshape(-1), dtype=torch.float32)
+                )
+
+                next_r_obs.append(torch.as_tensor(robot_obs, dtype=torch.float32))
+
+                rwd.append(torch.as_tensor([r], dtype=torch.float32))
+
+                is_done.append(torch.as_tensor([1 - int(done)], dtype=torch.float32))
+
+                if isinstance(info, Discomfort):
+                    too_close += 1
+                    min_dist.append(info.min_dist)
+
+                if done:
+                    if render:
+                        self.env.render()
+                    sum_rewards += r
+
+            if isinstance(info, ReachGoal):
+                success += 1
+                success_times.append(self.env.global_time)
+            elif isinstance(info, Collision):
+                collision += 1
+                collision_cases.append(k)
+                collision_times.append(self.env.global_time)
+            elif isinstance(info, Timeout):
+                timeout += 1
+                timeout_cases.append(k)
+                timeout_times.append(self.env.time_limit)
+
+            # j += 1
+            # rewards = rwd[:j, :]
+            sum_cdrs = self.calc_cdr(rwd)
+
+            sum_returns += self.calc_returns(rwd)
+
+            # if isinstance(info, ReachGoal):
+            if isinstance(info, ReachGoal) or isinstance(info, Collision):
+                for i in range(len(obs)):
+                    # test = v[i]
+                    # yy = r_obs[i]
+                    samples = TensorDict(
+                        {
+                            "humans_obs": obs[i].reshape(-1, self.obs_dim),
+                            "next_humans_obs": next_obs[i].reshape(-1, self.obs_dim),
+                            "robot_obs": r_obs[i],
+                            "next_robot_obs": next_r_obs[i],
+                            "action": act[i].reshape(-1, self.act_dim),
+                            "reward": rwd[i],
+                            "done": is_done[i],
+                        }
+                    )
+                    buffer.add(samples)
+        if pbar:
+            pbar.set_postfix(Reward=str(sum_rewards / k))
+
+        avg_reward = sum_rewards / k
+        avg_cdr = (sum_cdrs / k).item()
+        avg_return = (sum_returns / k).item()
+        success_rate = success / k
+        collision_rate = collision / k
+        timeout_rate = timeout / k
+        assert success + collision + timeout == k
+        avg_nav_time = (
+            sum(success_times) / len(success_times)
+            if success_times
+            else self.env.time_limit
+        )
+
+        return (
+            avg_reward,
+            avg_cdr,
+            avg_return,
+            success_rate,
+            collision_rate,
+            timeout_rate,
+            avg_nav_time,
+        )
+
+
+    def exploration_k_ep_with_flow(
+        self,
+        buffer,
+        model=None,
+        flow=None,
+        k=1,
+        epsilon=0.5,
+        render=False,
+        pbar=None,
+        random_p_num=False,
+        p_range=(1, 5),
+        render_switching=False,
+        learning_based_only=False,
+    ):
+        trajs = []
+        d_a = self.act_dim
+        sum_rewards = 0
+        sum_cdrs = 0
+        sum_returns = 0
+        ###############################
+        success_times = []
+        collision_times = []
+        timeout_times = []
+        success = 0
+        collision = 0
+        timeout = 0
+        anomaly = 0
+        normality = 0
+        too_close = 0
+        min_dist = []
+        collision_cases = []
+        timeout_cases = []
+        switching_list = []
+
+        ###############################
+        for _ in range(k):
+            if random_p_num:
+                p_num = np.random.randint(*p_range)
+                self.env.set_human_num(p_num)
+                d_o = self.obs_dim * p_num
+            else:
+                d_o = self.obs_dim * self.env.human_num
+            d_ro = self.r_obs_dim
+            d_s = self.state_dim * self.env.human_num
+
+            # Temporary buffer list
+            next_obs = []
+            obs = []
+            act = []
+            next_r_obs = []
+            r_obs = []
+            rwd = []
+            is_done = []
+
+            robot_state, human_state = self.env.reset("train")
+            robot_obs, humans_obs = self.transfunc(
+                robot_state,
+                human_state,
+            )
+            o0 = torch.clone(humans_obs.reshape(-1))
+            r_o0 = torch.clone(robot_obs)
+            # if model != None:
+            #     s = psr.estimate_state(human_obs.reshape(-1).to(psr.device))
+            #     # integrated_states = []
+            done = False
+            while not done:
+                a, _, _ = model.generate_action(
+                    (
+                        humans_obs.unsqueeze(0).to(model.device),
+                        robot_obs.reshape(1, 1, -1).to(model.device),
+                    )
+                )
+                a = (
+                    a.clamp(model.actor.act_min, model.actor.act_max)
+                    .cpu()
+                    .data.numpy()
+                    .squeeze()
+                )
+
+                a_l = self.convert_action(a)
+
+                a_o = self.env.robot.act(human_state)
+                switching_necessity = flow.switching_necessity(
+                    humans_obs.unsqueeze(0).to(flow.device)
+                )
+                if switching_necessity:
+                    # if flow.detect_anomaly(
+                    #     (
+                    #         human_obs.unsqueeze(0).to(flow.device),
+                    #         robot_obs.reshape(1, 1, -1).to(flow.device),
+                    #     ),
+                    # ):
+                    if learning_based_only:
+                        a = a_l
+                    else:
+                        a = a_o
+                        # act.append(torch.as_tensor(a, dtype=torch.float32))
+                    anomaly += 1
+                    # anomaly_in_ep += 1
+                    if render_switching:
+                        switching_list.append(True)
+                else:
+                    a = a_l
+                    normality += 1
+                    # normality_in_ep += 1
+                    if render_switching:
+                        switching_list.append(False)
 
                 obs.append(torch.as_tensor(humans_obs.reshape(-1), dtype=torch.float32))
 

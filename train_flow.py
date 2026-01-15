@@ -169,6 +169,7 @@ buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity),s
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     scenario="square_crossing",
+    human_num=5,
     k=cfg.train.preliminary_exp_n,
     # k=100,
     render=False,
@@ -177,6 +178,7 @@ expl_logs = expl.exploration_k_ep_orca(
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer_val,
     scenario="circle_crossing",
+    human_num=5,
     k=cfg.train.preliminary_exp_n,
     # k=100,
     render=False,

@@ -81,7 +81,7 @@ start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/meta_critic_config.py"
+config_path = "./configs/meta_critic_awac_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -128,9 +128,9 @@ seed_all(cfg.train.random_seed)
 
 #################################
 # Settings
-run_dir = "wandb/meta_critic_training/wandb/run-20260114_153520-0hq15hd9"
+run_dir = "wandb/meta_critic_awac_training/wandb/run-20260115_204322-8x3vaf4c"
 
-model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
+model_path = os.path.join(run_dir, "files/trained_models/model_10000.pth")
 
 ##################################################################################
 # load env

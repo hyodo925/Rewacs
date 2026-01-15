@@ -22,8 +22,8 @@ class SocialActorAWAC(nn.Module):
         self.net = self.make_mlp([D] + h_dims, activation=activation, last_act=True)
 
         self.mean_linear = nn.Linear(h_dims[-1], d)
-        self.log_std_logits = nn.Parameter(torch.zeros(d, requires_grad=True))
-        # self.log_std_logits = nn.Linear(h_dims[-1], d)
+        # self.log_std_logits = nn.Parameter(torch.zeros(d, requires_grad=True))
+        self.log_std_logits = nn.Linear(h_dims[-1], d)
 
         self.act_min = action_space[0]
         self.act_max = action_space[1]
@@ -58,8 +58,8 @@ class SocialActorAWAC(nn.Module):
         x = self.net(data)
         mean = self.mean_linear(x)
 
-        # log_std = torch.sigmoid(self.log_std_logits(x))
-        log_std = torch.sigmoid(self.log_std_logits)
+        log_std = torch.sigmoid(self.log_std_logits(x))
+        # log_std = torch.sigmoid(self.log_std_logits)
         log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
 
         return mean, log_std
@@ -70,8 +70,8 @@ class SocialActorAWAC(nn.Module):
         x = self.net(data)
         mean = self.mean_linear(x)
         mean = torch.tanh(mean) * self.act_max
-        # log_std = torch.sigmoid(self.log_std_logits(x))
-        log_std = torch.sigmoid(self.log_std_logits)
+        log_std = torch.sigmoid(self.log_std_logits(x))
+        # log_std = torch.sigmoid(self.log_std_logits)
         log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
         std = torch.exp(log_std)
         dist = Normal(mean, std)

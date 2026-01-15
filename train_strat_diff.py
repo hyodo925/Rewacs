@@ -20,16 +20,18 @@ from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
-from meta_rl_navigation import MetaRLNavigation
-from algo.meta_critic.eval import eval_policy_fql
-# from utils.explorer import ExplorerCrowdSim
+from rl_navigation import RLNavigation
+from utils.evaluation import eval_policy
 from utils.explorer import ExplorerCrowdSim
-from algo.meta_critic.critic import SocialCritic
-from algo.meta_critic.integrator import EmbeddedGaussianIntegrator
-from algo.meta_critic.actor import SocialActorMetaCriticFQL
-from algo.meta_critic.trainer import MetaCriticFQL
-from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
-from algo.meta_critic.models import BC_flow
+from utils.models import (
+    SocialCritic,
+)
+from utils.state_integrators import (
+    EmbeddedGaussianIntegrator,
+)
+from algo.awac.trainer import AWAC
+from algo.awac.actor import SocialActorAWAC
+
 try:
     import wandb
 except ModuleNotFoundError:
@@ -74,10 +76,18 @@ def define_env(
 
 
 start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+    print("Using MPS")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("Using CUDA")
+else:
+    device = torch.device("cpu")
+    print("Using CPU")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/meta_critic_fql_config.py"
+config_path = "./configs/awac_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -92,8 +102,8 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_meta_critic_fql_training",
-        dir=f"wandb/meta_critic_fql_training",
+        name=f"{start_time_log}_awac_training",
+        dir=f"wandb/awac_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -147,8 +157,8 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorMetaCriticFQL(
-    cfg.model.projection_dim + cfg.model.action_dim,
+actor = SocialActorAWAC(
+    cfg.model.projection_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
     h_dims=cfg.model.actor_h_dims,
@@ -170,39 +180,8 @@ critic = SocialCritic(
     single=False,
 )
 
-bc_flow_integrator = EmbeddedGaussianIntegrator(
-    cfg.model.obs_dim,
-    cfg.model.r_obs_dim,
-    projection_dim=cfg.model.projection_dim,
-    enc_hdims=cfg.model.critic_integrator_enc_hdims,
-)
+model = RLNavigation(actor=actor, critic=critic)
 
-bc_flow = BC_flow(
-        cfg.model.projection_dim + cfg.model.t_dim + cfg.model.x_t_dim,
-        2,
-        h_dims=[32, 100, 100],
-        integrator=bc_flow_integrator,
-    )
-
-meta_critic_integrator = EmbeddedGaussianIntegrator(
-    cfg.model.obs_dim,
-    cfg.model.r_obs_dim,
-    projection_dim=cfg.model.projection_dim,
-    enc_hdims=cfg.model.critic_integrator_enc_hdims,
-)
-# meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
-meta_critic = MetaCriticGraphNet(    
-    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.projection_dim ,
-    1,
-    h_dims=cfg.model.critic_h_dims,
-    integrator=meta_critic_integrator,
-    single=False,)
-
-
-model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic, bc_flow=bc_flow)
-
-# updater = VirtualActorUpdater()
-# updater = Hot_Plug()
 expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
@@ -219,44 +198,37 @@ expl = ExplorerCrowdSim(
 use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
-buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
-meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
-bc_flow_optimizer = torch.optim.Adam(model.bc_flow.parameters(), lr=cfg.train.lr)
 
-trainer = MetaCriticFQL(
+trainer = AWAC(
     model=model,
     replay_buffer=buffer,
-    replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
-    meta_critic_optimizer=meta_optimizer,
-    bc_flow_optimizer=bc_flow_optimizer,
     batch_size=cfg.train.batch_size,
 )
 
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     k=cfg.train.preliminary_exp_n,
-    scenario="square_crossing",
-    human_num=cfg.sim.human_num,
     # k=100,
     render=False,
 )
 
-expl_logs_val = expl.exploration_k_ep_orca(
-    buffer=buffer_val,
-    k=cfg.train.preliminary_exp_n,
-    scenario="circle_crossing",
-    human_num=cfg.sim.human_num,
-    # k=100,
-    render=False,
-)
 
 loss_list = []
 
+# val_logs = eval_policy(
+#     eval_env=env,
+#     model=model,
+#     transfunc=transfunc,
+#     eval_episodes=env.case_size["test"],
+#     scenario="test",
+#     render=False,
+#     print_results=True
+# )
 
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
@@ -287,7 +259,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
-
+            update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
@@ -296,7 +268,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             trainer.update_target()
 
         if (i + 1) % cfg.eval.eval_interval == 0:
-            val_logs = eval_policy_fql(
+            val_logs = eval_policy(
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,
@@ -354,7 +326,7 @@ else:
 model.load_state_dict(best_model)
 print(f"The best model number is {best_step_num}")
 
-test_logs = eval_policy_fql(
+test_logs = eval_policy(
     eval_env=env,
     model=model,
     transfunc=transfunc,

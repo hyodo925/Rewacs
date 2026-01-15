@@ -36,7 +36,7 @@ class Simulation:
 
     square_width = 20
     circle_radius = 4
-    human_num = 10
+    human_num = 5
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -96,11 +96,11 @@ class Train:
     training_alg = "AWAC"
 
     onpolicy_finetuning = True
-    fintuning_rollout_itr = 5
+    fintuning_rollout_itr = 1
 
 
 class Evaluation:
-    eval_interval = 1000
+    eval_interval = 5
     final_eval_num = 500
     val_render = False
     render = False

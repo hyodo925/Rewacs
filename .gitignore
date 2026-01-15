@@ -11,6 +11,8 @@ wheels/
 !/logs/.gitkeep
 /videos/*
 !/videos/.gitkeep
+/figs/*
+!/figs/.gitkeep
 /trajs/*
 !/trajs/.gitkeep
 /trained_models/*

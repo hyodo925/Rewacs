@@ -209,16 +209,6 @@ critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
 
-# trainer = MetaCriticAWAC(
-#     model=model,
-#     replay_buffer=buffer,
-#     replay_buffer_val=buffer_val,
-#     actor_optimizer=actor_optimizer,
-#     critic_optimizer=critic_optimizer,
-#     meta_critic_optimizer=meta_optimizer,
-#     batch_size=cfg.train.batch_size,
-# )
-
 trainer = MetaCriticCalQL(
     model=model,
     action_dim=cfg.model.action_dim,
@@ -234,6 +224,7 @@ expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     k=cfg.train.preliminary_exp_n,
     scenario="square_crossing",
+    human_num=cfg.sim.human_num,
     # k=100,
     render=False,
 )
@@ -242,6 +233,7 @@ expl_logs_val = expl.exploration_k_ep_orca(
     buffer=buffer_val,
     k=cfg.train.preliminary_exp_n,
     scenario="circle_crossing",
+    human_num=cfg.sim.human_num,
     # k=100,
     render=False,
 )

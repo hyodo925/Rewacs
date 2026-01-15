@@ -78,7 +78,7 @@ class Model:
     h_dim = 32
     n_flow_blocks = 10
     n_flow_hidden_num = 3
-    threshold_type = "sum"
+    threshold_type = "mean"
 
 
 class Transfunc:
@@ -102,7 +102,7 @@ class Train:
 
 
 class Evaluation:
-    eval_interval = 100
+    eval_interval = 10
     final_eval_num = 500
     val_render = False
     render = False

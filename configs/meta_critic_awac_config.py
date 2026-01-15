@@ -36,7 +36,7 @@ class Simulation:
 
     square_width = 20
     circle_radius = 4
-    human_num = 5
+    human_num = 10
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -88,7 +88,7 @@ class Train:
     random_seed = 17
     offline_learning = True
     lr = 3e-4
-    preliminary_exp_n = 10
+    preliminary_exp_n = 200
     total_it = 10000
     batch_size = 100
     buffer_capacity = 100000
@@ -102,7 +102,7 @@ class Train:
 
 
 class Evaluation:
-    eval_interval = 1000
+    eval_interval = 10
     final_eval_num = 500
     val_render = False
     render = False
@@ -111,10 +111,10 @@ class Evaluation:
 
 class Log:
     wandb_project = "Meta_Critic_AWAC_training"
-    wandb_mode = "offline"
-    # wandb_mode = "online"
-    wandb = False
-    save_model = False
+    # wandb_mode = "offline"
+    wandb_mode = "online"
+    wandb = True
+    save_model = True
 
 
 b = FlexibleConfigBuilder()

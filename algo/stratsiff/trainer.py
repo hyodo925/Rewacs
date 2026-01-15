@@ -5,7 +5,7 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 
-class AWAC:
+class StratDiff:
     def __init__(
         self,
         model,
@@ -17,7 +17,7 @@ class AWAC:
         gamma=0.9,
         beta=0.3,
     ):
-        self.alg_name = "AWAC"
+        self.alg_name = "StratDiff"
         self.model = model
         self.target = copy.deepcopy(model)
         self.replay_buffer = replay_buffer
@@ -25,11 +25,10 @@ class AWAC:
         self.critic_optimizer = critic_optimizer
         self.batch_size = batch_size
         self.polyak = polyak
-        self.device = model.device
-        self.gamma = torch.as_tensor([gamma]).to(self.device)
-        self.beta = torch.as_tensor([beta]).to(self.device)
+        self.gamma = torch.as_tensor([gamma])
+        self.beta = torch.as_tensor([beta])
 
-        
+        self.device = model.device
 
     def safe_exp(self, x):
         return torch.where(x < 50, torch.exp(x), x)

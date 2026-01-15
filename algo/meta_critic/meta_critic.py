@@ -46,6 +46,6 @@ class MetaCriticGraphNet(nn.Module):
         if self.integrator != None:
             data = self.integrator(*obs)
         data = torch.cat([data, act, other_output], 1)
-        out1 = self.net1(data)
-        return torch.mean(out1)
+        x = nn.functional.softplus(self.net1(data))
+        return torch.mean(x)
     

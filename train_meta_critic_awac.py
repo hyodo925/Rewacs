@@ -173,13 +173,13 @@ critic = SocialCritic(
     single=False,
 )
 
-meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
-# meta_critic = MetaCriticGraphNet(    
-#     cfg.model.projection_dim + cfg.model.action_dim + cfg.model.other_output_dim,
-#     1,
-#     h_dims=cfg.model.critic_h_dims,
-#     integrator=critic_integrator,
-#     single=False,)
+# meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
+meta_critic = MetaCriticGraphNet(    
+    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.other_output_dim,
+    1,
+    h_dims=cfg.model.critic_h_dims,
+    integrator=critic_integrator,
+    single=False,)
 model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 
 # updater = VirtualActorUpdater()
@@ -230,6 +230,7 @@ expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     k=cfg.train.preliminary_exp_n,
     scenario="square_crossing",
+    human_num=cfg.sim.human_num,
     # k=100,
     render=False,
 )
@@ -238,6 +239,7 @@ expl_logs_val = expl.exploration_k_ep_orca(
     buffer=buffer_val,
     k=cfg.train.preliminary_exp_n,
     scenario="circle_crossing",
+    human_num=cfg.sim.human_num,
     # k=100,
     render=False,
 )

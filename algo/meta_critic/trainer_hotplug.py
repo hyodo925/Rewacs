@@ -122,16 +122,16 @@ class MetaCriticAWAC:
                 weights = self.safe_exp(adv / self.beta)
             policy_loss_val = -(f_actor.get_log_prob((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),pi_val.squeeze().to(self.device),)* weights).mean()
 
-            # loss_auxiliary = self.model.meta_critic(
-            #     (
-            #         obs.reshape(self.batch_size, -1).to(self.device),
-            #         r_obs.reshape(self.batch_size, -1).to(self.device),
-            #     ),
-            #     act.squeeze().to(self.device),
-            #     other_output.reshape(self.batch_size, -1).to(self.device),
-            # )
-            concat = torch.concat([obs.reshape(self.batch_size, -1).to(self.device), r_obs.reshape(self.batch_size, -1).to(self.device), act.squeeze().to(self.device),other_output.reshape(self.batch_size, -1).to(self.device),], dim=1)
-            loss_auxiliary = self.model.meta_critic(concat)
+            loss_auxiliary = self.model.meta_critic(
+                (
+                    obs.reshape(self.batch_size, -1).to(self.device),
+                    r_obs.reshape(self.batch_size, -1).to(self.device),
+                ),
+                act.squeeze().to(self.device),
+                other_output.reshape(self.batch_size, -1).to(self.device),
+            )
+            # concat = torch.concat([obs.reshape(self.batch_size, -1).to(self.device), r_obs.reshape(self.batch_size, -1).to(self.device), act.squeeze().to(self.device),other_output.reshape(self.batch_size, -1).to(self.device),], dim=1)
+            # loss_auxiliary = self.model.meta_critic(concat)
             # loss_auxiliary = self.model.meta_critic(
             #     (
             #         obs.reshape(self.batch_size, -1).to(self.device),

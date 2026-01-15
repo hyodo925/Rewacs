@@ -87,11 +87,11 @@ model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
 ############# flow model ####################
 # Settings
-flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260113_141037-kzovrg3f"
+flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260115_185132-efar27og"
 
 flow_config_path = os.path.join(flow_run_dir, "files/config.py")
 
-flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth")
+flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_410.pth")
 
 render = False
 render_type = "video"

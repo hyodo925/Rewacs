@@ -3,7 +3,8 @@ import torch.nn as nn
 import numpy as np
 from flow.flows import RealNVP, GrevNet
 from flow.graph_models import Encoder
-
+import matplotlib.pyplot as plt
+import seaborn as sns
 class SituationFlow(nn.Module):
     def __init__(
         self,
@@ -154,9 +155,38 @@ class GraphSituationFlow(nn.Module):
                 return torch.mean( torch.sum(0.5 * torch.sum(z**2, dim=(2,)), dim=(1,)) - torch.sum(log_det_j, dim=(1,)) )
         else:
             return torch.mean(0.5 * torch.sum(z**2, dim=(1,)) - log_det_j) / (z.shape[1])
+    
+    def plot_log_prob_comparison(self, model, train_loader, ood_loader, switching_score, device, save_path=None):
+        model.eval()
+        train_scores = []
+        ood_scores = []
+        with torch.no_grad():
+            for i in range(100):
+                data = train_loader.sample(100)["humans_obs"].to(device)
+                scores = model.get_switching_score(data)
+                train_scores.append(scores.item())
+
+            for i in range(100):
+                data = ood_loader.sample(100)["humans_obs"].to(device)
+                scores = model.get_switching_score(data)
+                ood_scores.append(scores.item())
+
+        plt.figure(figsize=(8, 5))
+        sns.set_style("darkgrid")
+
+        sns.histplot(train_scores, color="gray", label="Train (ID)", kde=True, stat="density", alpha=0.6)
+        sns.histplot(ood_scores, color="crimson", label="Test (OOD)", kde=True, stat="density", alpha=0.6)
+        plt.axvline(switching_score.item(),color="blue",linestyle="--",linewidth=2,label=f"Switching threshold = {switching_score.item():.4f}")
+        plt.xlabel("Switching score τ", fontsize=14)
+        plt.ylabel("Density", fontsize=14)
+        plt.title("Log-Probability Distribution Comparison", fontsize=15)
+        plt.legend()
         
-    def eval(train_data, val_data):
-        pass
+        if save_path:
+            plt.savefig(save_path)
+            plt.close()
+        else:
+            plt.show()
 
 
     def to(self, device):

@@ -88,7 +88,7 @@ class Train:
     random_seed = 17
     offline_learning = True
     lr = 3e-4
-    preliminary_exp_n = 10
+    preliminary_exp_n = 200
     total_it = 10000
     batch_size = 100
     buffer_capacity = 100000

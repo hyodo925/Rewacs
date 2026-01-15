@@ -97,14 +97,23 @@ def grevnet_training(
         # print(f"ID_ratio: {false_ratio:.2%}")
 
         if not model_dir is None:
-            model.eval(data_loader,validation)
+            # model.eval(data_loader,validation)
             if (m + 1) % model_save_freq == 0:
-                model.set_switching_threshold(data_loader[:len(data_loader)]["humans_obs"])
+                switching_score = model.set_switching_threshold(data_loader[:len(data_loader)]["humans_obs"])
+                model.plot_log_prob_comparison(
+                    model, 
+                    data_loader, 
+                    validation,
+                    switching_score,
+                    model.device, 
+                    save_path=f"figs/logp_graph/logp_comparison_{m+1}.png"
+                )
+                
                 model.save_model(model_dir + f"/model_{m + 1}.pth")
                 if data_for_logging is not None:
                     data_for_logging.log(
                         {
-                            "threshold": data_th.data.item(),
+                            "threshold": switching_score,
                         },
                         step = m + 1,
                     )
