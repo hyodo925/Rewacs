@@ -11,6 +11,7 @@ class MetaRLNavigation(nn.Module):
         critic,
         value=None,
         meta_critic=None,
+        context_encoder=None,
         bc_flow=None,
         device="cpu",
     ):
@@ -20,6 +21,7 @@ class MetaRLNavigation(nn.Module):
         self.critic = critic
         self.value = value
         self.meta_critic = meta_critic
+        self.context_encoder = context_encoder
         self.bc_flow = bc_flow
         self.device = device
 
@@ -35,6 +37,10 @@ class MetaRLNavigation(nn.Module):
         action, log_prob, mean, _  = self.actor.sample(state)
         return action, log_prob, mean, _
     
+    def generate_action_z(self, state, z):
+        action, log_prob, mean  = self.actor.sample(state, z)
+        return action, log_prob, mean 
+
     def generate_action_one_step(self, state, noise):
         action, _  = self.actor.sample_one_step_action(state, noise)
         return action, _

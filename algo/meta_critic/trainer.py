@@ -6,6 +6,10 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from .virtual_updater import VirtualActorUpdater
 import higher
+
+
+def l1_penalty(var):
+    return torch.abs(var).sum()
 class MetaCriticAWAC:
     def __init__(
         self,
@@ -36,7 +40,18 @@ class MetaCriticAWAC:
         self.lr =lr
         self.device = model.device
 
-        self.updater = VirtualActorUpdater()
+        feature_net = nn.Sequential(*list(self.model.actor.children())[:-2])
+
+        def get_layer(model):
+            count = 0
+            para_optim = []
+            for k in model.children():
+                count += 1
+                # 6 should be changed properly
+                for param in k.parameters():
+                    para_optim.append(param)
+            return para_optim
+        self.param_optim_theta = get_layer(self.model.actor)
 
     def safe_exp(self, x):
         return torch.where(x < 50, torch.exp(x), x)
@@ -45,7 +60,7 @@ class MetaCriticAWAC:
         sample = self.replay_buffer.sample(self.batch_size)
         obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
 
-        sample_val = self.replay_buffer_val.sample(self.batch_size)
+        sample_val = self.replay_buffer.sample(self.batch_size)
         obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample_val.values())
 
         with torch.no_grad():
@@ -87,97 +102,62 @@ class MetaCriticAWAC:
         ###############################
         ### compute actor loss      ###
         ###############################
-        action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
-        with torch.no_grad():
-            qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
-            v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
-            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
-            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
-            weights = self.safe_exp(adv / self.beta)
+        with higher.innerloop_ctx(self.model.actor,self.actor_optimizer,copy_initial_weights=False) as (f_actor, diffopt):
+            action_gen, log_prob, _, other_output = f_actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
+            with torch.no_grad():
+                qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+                v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
+                qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+                adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+                weights = self.safe_exp(adv / self.beta)
 
-        loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
+            loss_act = -(f_actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
+            diffopt.step(loss_act)
 
-        ###############################
-        ### compute loss aux        ###
-        ############################### 
-        loss_auxiliary = self.model.meta_critic(
-            (
-                obs.reshape(self.batch_size, -1).to(self.device),
-                r_obs.reshape(self.batch_size, -1).to(self.device),
-            ),
-            act.squeeze().to(self.device),
-            other_output.reshape(self.batch_size, -1).to(self.device),
-        )
+            with torch.no_grad():
+                pi_val, log_pi_val, *_ = f_actor.sample((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),))
+                v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val)
+                qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+                adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+                weights = self.safe_exp(adv / self.beta)
+            policy_loss_val = -(f_actor.get_log_prob((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),pi_val.squeeze().to(self.device),)* weights).mean()
 
-        ################################################
-        ### first pseudo update with loss act        ###
-        ################################################
+            loss_auxiliary = self.model.meta_critic(
+                (
+                    obs.reshape(self.batch_size, -1).to(self.device),
+                    r_obs.reshape(self.batch_size, -1).to(self.device),
+                ),
+                act.squeeze().to(self.device),
+                other_output.reshape(self.batch_size, -1).to(self.device),
+            )
+            # concat = torch.concat([obs.reshape(self.batch_size, -1).to(self.device), r_obs.reshape(self.batch_size, -1).to(self.device), act.squeeze().to(self.device),other_output.reshape(self.batch_size, -1).to(self.device),], dim=1)
+            # loss_auxiliary = self.model.meta_critic(concat)
 
-        grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), create_graph=True, allow_unused=True)
-        self.updater.step(self.model.actor, grads_critic, "phi_old", self.lr)
-        old_param = self.updater.get("phi_old")
-        
-        with torch.no_grad():
-            qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
-            pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param,)
-            v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val)
-            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
-            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
-            weights = self.safe_exp(adv / self.beta)
+            diffopt.step(loss_auxiliary)
 
-        policy_loss_val = -(self.model.actor.get_log_prob((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),pi_val.squeeze().to(self.device),)* weights).mean()
+            with torch.no_grad():
+                pi_val_new, log_pi_val_new, *_ = f_actor.sample((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),))
+                v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val_new)
+                qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+                adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+                weights = self.safe_exp(adv / self.beta)
+            policy_loss_val_new = -(f_actor.get_log_prob((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device)),pi_val_new.squeeze().to(self.device),)* weights).mean()
 
-        # abs_theta = 0.0
-        # for p in self.param_optim_theta:
-        #     if p.grad is not None:
-        #         penalty = l1_penalty(p.grad)
-        #         if torch.isnan(penalty).any():
-        #             print("Warning: NaN in L1 penalty")
-        #         abs_theta += penalty.item()
-
-        ################################################
-        ### second pseudo update with loss aux       ###
-        ################################################
-
-        grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
-        self.updater.step(self.model.actor, grads_mcritic, "phi_new", self.lr, from_params=old_param)
-        new_param = self.updater.get("phi_new")
-        with torch.no_grad():
-            pi_val_new, log_pi_val_new, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
-            v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val_new)
-
-            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
-            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
-            weights = self.safe_exp(adv / self.beta)
-
-        policy_loss_val_new = -(self.model.actor.get_log_prob((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device)),pi_val_new.squeeze().to(self.device),)* weights).mean()
-        
-        ###############################
-        ### compute loss meta       ###
-        ###############################
+            total_actor_loss = loss_act + loss_auxiliary
         utility = policy_loss_val - policy_loss_val_new
         utility = torch.tanh(utility)
         loss_meta = -utility
         self.meta_critic_optimizer.zero_grad()
-        loss_meta.backward()
+        # loss_meta.backward()
+        grad_omega = torch.autograd.grad(loss_meta, self.model.meta_critic.parameters(),allow_unused=True)
+        for gradient, variable in zip(grad_omega, self.model.meta_critic.parameters()):
+            variable.grad = gradient
+        # loss_meta.backward()
         self.meta_critic_optimizer.step()
         lm = loss_meta.data.item()
-   
-        # action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshapeself.batch_size, 1, -1).to(self.device)))
-        # with torch.no_grad():
-        #     qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
-        #     v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
-        #     qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
-        #     adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
-        #     weights = self.safe_exp(adv / self.beta)
 
-        # loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
-
-        # loss_auxiliary = self.model.meta_critic((obs.reshape(self.batch_size, -1).to(self.device),r_obs.reshape(self.batch_size, -1).to(self.device),),act.squeeze().to(self.device),other_output.reshape(self.batch_size, -1).to(self.device),)(
-        # loss_act = loss_act + loss_auxiliary
         self.actor_optimizer.zero_grad()
-        loss_auxiliary.backward()
-        loss_act.backward()
+        total_actor_loss.backward(retain_graph=True)
         self.actor_optimizer.step()
         la = loss_act.data.item()
 
@@ -186,79 +166,7 @@ class MetaCriticAWAC:
                 {
                     "loss/actor": la,
                     "loss/meta": lm,
-                },
-                step=data_for_logging[1],
-            )
-    
-    def finetune(self, data_for_logging=None):
-        sample = self.replay_buffer.sample(self.batch_size)
-        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
-
-        with torch.no_grad():
-            next_act_target, next_log_prob, *_ = self.model.actor.sample(
-                (
-                    next_obs.to(self.device),
-                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
-                )
-            )
-            Q_target_1, Q_target_2 = self.target.critic(
-                (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
-            )
-            Q_target_min = torch.min(torch.cat((Q_target_1, Q_target_2), 1), dim=1)[
-                0
-            ].unsqueeze(-1)
-
-            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
-                self.device
-            )
-
-        Q1, Q2 = self.model.critic(
-            (obs.to(self.device), r_obs.to(self.device)),
-            act.squeeze().to(self.device),
-        )
-
-        loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
-        self.critic_optimizer.zero_grad()
-        loss_critic.backward()
-        self.critic_optimizer.step()
-        lc = loss_critic.data.item()
-
-        if data_for_logging is not None:
-            data_for_logging[0].log(
-                {
-                    "loss/critic": lc,
-                },
-                step=data_for_logging[1],
-            )
-
-        action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
-        with torch.no_grad():
-            qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
-            v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
-            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
-            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
-            weights = self.safe_exp(adv / self.beta)
-
-        loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
-        loss_auxiliary = self.model.meta_critic(
-            (
-                obs.reshape(self.batch_size, -1).to(self.device),
-                r_obs.reshape(self.batch_size, -1).to(self.device),
-            ),
-            act.squeeze().to(self.device),
-            other_output.reshape(self.batch_size, -1).to(self.device),
-        )
-   
-        loss_act = loss_act + loss_auxiliary.detach()
-        self.actor_optimizer.zero_grad()
-        loss_act.backward()
-        self.actor_optimizer.step()
-        la = loss_act.data.item()
-
-        if data_for_logging is not None:
-            data_for_logging[0].log(
-                {
-                    "loss/actor": la,
+                    # "abs_theta": abs_theta,
                 },
                 step=data_for_logging[1],
             )
@@ -269,7 +177,6 @@ class MetaCriticAWAC:
         ):
             target_param.data.mul_(self.polyak)
             target_param.data.add_((1 - self.polyak) * param.data)
-
 
 
 class Scalar(nn.Module):

@@ -30,7 +30,7 @@ from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
 from algo.meta_critic.actor import SocialActorMetaCriticAWAC
-from algo.meta_critic.trainer_hotplug import MetaCriticAWAC
+from algo.meta_critic.trainer import MetaCriticAWAC
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:
