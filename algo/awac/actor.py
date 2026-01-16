@@ -14,7 +14,7 @@ class SocialActorAWAC(nn.Module):
         activation="leaky_relu",
         integrator=None,
         log_std_max=0,
-        log_std_min=-6,
+        log_std_min=-2,
     ):
         super().__init__()
         self.integrator = integrator
@@ -76,7 +76,7 @@ class SocialActorAWAC(nn.Module):
         std = torch.exp(log_std)
         dist = Normal(mean, std)
         logp_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
-
+        logp_prob = torch.clamp(logp_prob, min=-100.0)
         return logp_prob
 
     def sample(self, data):

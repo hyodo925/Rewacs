@@ -218,7 +218,7 @@ class ExplorerCrowdSim:
                             "next_robot_obs": next_r_obs[i],
                             "action": act[i].reshape(-1, self.act_dim),
                             "reward": rwd[i],
-                            "mc_return": mc_returns[i],
+                            # "mc_return": mc_returns[i],
                             "done": is_done[i],
                         }
                     )
@@ -306,7 +306,7 @@ class ExplorerCrowdSim:
             #     # integrated_states = []
             done = False
             while not done:
-                a, _, _, _ = model.generate_action(
+                a, _, _, _ = model.generate_action_feature(
                     (
                         humans_obs.unsqueeze(0).to(model.device),
                         robot_obs.reshape(1, 1, -1).to(model.device),

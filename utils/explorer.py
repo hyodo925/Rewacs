@@ -127,11 +127,13 @@ class ExplorerCrowdSim:
             rwd = []
             is_done = []
 
+            self.env.set_human_num(human_num)
+            self.env.set_explorer_scenario(scenario)
+
             robot_state, ob = self.env.reset("train")
             done = False
             robot_obs, humans_obs = self.transfunc(robot_state, ob)
-            self.env.set_human_num(human_num)
-            self.env.set_explorer_scenario(scenario)
+
 
             while not done:
                 a = self.env.robot.act(ob)

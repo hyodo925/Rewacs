@@ -22,16 +22,16 @@ from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from meta_rl_navigation import MetaRLNavigation
 from algo.meta_critic.eval import eval_policy
-from utils.explorer import ExplorerCrowdSim
+from algo.meta_critic.explorer import ExplorerCrowdSim
 from utils.models import (
     SocialCritic,
 )
-from utils.state_integrators import (
+from algo.meta_critic.integrator import (
     EmbeddedGaussianIntegrator,
+    EmbeddedGaussianIntegratorRepeat
 )
-from algo.meta_critic.actor import SocialActorMetaCriticAWAC
-from algo.meta_critic.virtual_updater import VirtualActorUpdater, Hot_Plug
-from algo.meta_critic.trainer import MetaCriticAWAC
+from algo.meta_critic.actor import SocialActorMetaCriticCalQL
+from algo.meta_critic.trainer import MetaCriticCalQL
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:
@@ -81,7 +81,7 @@ start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/meta_critic_awac_config.py"
+config_path = "./configs/meta_critic_calql_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -96,8 +96,8 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_meta_critic_training",
-        dir=f"wandb/meta_critic_training",
+        name=f"{start_time_log}_meta_critic_calql_finetuning",
+        dir=f"wandb/meta_critic_calql_finetuning",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -128,7 +128,7 @@ seed_all(cfg.train.random_seed)
 
 #################################
 # Settings
-run_dir = "wandb/meta_critic_awac_training/wandb/run-20260115_204322-8x3vaf4c"
+run_dir = "wandb/meta_critic_calql_training/wandb/run-20260115_205000-xrhu4tjb"
 
 model_path = os.path.join(run_dir, "files/trained_models/model_10000.pth")
 
@@ -150,14 +150,14 @@ def convert_action(action):
     return action
 
 
-actor_integrator = EmbeddedGaussianIntegrator(
+actor_integrator = EmbeddedGaussianIntegratorRepeat(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorMetaCriticAWAC(
+actor = SocialActorMetaCriticCalQL(
     cfg.model.projection_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
@@ -165,7 +165,7 @@ actor = SocialActorMetaCriticAWAC(
     integrator=actor_integrator,
 )
 
-critic_integrator = EmbeddedGaussianIntegrator(
+critic_integrator = EmbeddedGaussianIntegratorRepeat(
     cfg.model.obs_dim,
     cfg.model.r_obs_dim,
     projection_dim=cfg.model.projection_dim,
@@ -180,15 +180,23 @@ critic = SocialCritic(
     single=False,
 )
 
+meta_critic_integrator = EmbeddedGaussianIntegrator(
+    cfg.model.obs_dim,
+    cfg.model.r_obs_dim,
+    projection_dim=cfg.model.projection_dim,
+    enc_hdims=cfg.model.critic_integrator_enc_hdims,
+)
 # meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
 meta_critic = MetaCriticGraphNet(    
     cfg.model.projection_dim + cfg.model.action_dim + cfg.model.other_output_dim,
     1,
     h_dims=cfg.model.critic_h_dims,
-    integrator=critic_integrator,
+    integrator=meta_critic_integrator,
     single=False,)
 model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 
+# updater = VirtualActorUpdater()
+# updater = Hot_Plug()
 expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
@@ -211,8 +219,12 @@ critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
 
-trainer = MetaCriticAWAC(
+model.load_model(model_path)
+model.to(device)
+
+trainer = MetaCriticCalQL(
     model=model,
+    action_dim=cfg.model.action_dim,
     replay_buffer=buffer,
     replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
@@ -221,12 +233,14 @@ trainer = MetaCriticAWAC(
     batch_size=cfg.train.batch_size,
 )
 
-model.load_model(model_path)
+
 
 if not cfg.train.onpolicy_finetuning:
     expl_logs = expl.exploration_k_ep_orca(
         buffer=buffer,
         k=cfg.train.preliminary_exp_n,
+        scenario="circle_crossing",
+        human_num=cfg.sim.human_num,
         # k=100,
         render=False,
     )

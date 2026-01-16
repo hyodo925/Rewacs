@@ -97,12 +97,12 @@ class Train:
     polyak = 0.995
     training_alg = "Meta_Critic_AWAC"
 
-    onpolicy_finetuning = True
+    onpolicy_finetuning = False
     fintuning_rollout_itr = 5
 
 
 class Evaluation:
-    eval_interval = 10
+    eval_interval = 1000
     final_eval_num = 500
     val_render = False
     render = False
@@ -111,10 +111,10 @@ class Evaluation:
 
 class Log:
     wandb_project = "Meta_Critic_AWAC_training"
-    # wandb_mode = "offline"
-    wandb_mode = "online"
-    wandb = True
-    save_model = True
+    wandb_mode = "offline"
+    # wandb_mode = "online"
+    wandb = False
+    save_model = False
 
 
 b = FlexibleConfigBuilder()

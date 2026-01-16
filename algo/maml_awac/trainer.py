@@ -113,7 +113,10 @@ class MAMLAWAC:
         ].reshape((-1, 1))
 
         adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen).detach()
+        adv = (adv - adv.mean()) / (adv.std() + 1e-8) 
         weights = self.safe_exp(adv / self.beta)
+        weights = torch.clamp(weights, max=100.0)
+        weights = weights / (weights.mean() + 1e-8)
         
         loss_act = -(
                 policy.get_log_prob(
