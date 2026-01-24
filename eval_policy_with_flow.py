@@ -87,16 +87,15 @@ model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
 ############# flow model ####################
 # Settings
-flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260115_185132-efar27og"
+flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260121_142518-hifx4rkp"
 
 flow_config_path = os.path.join(flow_run_dir, "files/config.py")
 
-flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_410.pth")
+flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth")
 
 render = False
 render_type = "video"
-#################################
-
+################################_
 start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

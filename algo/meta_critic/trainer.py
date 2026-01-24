@@ -157,7 +157,7 @@ class MetaCriticAWAC:
         lm = loss_meta.data.item()
 
         self.actor_optimizer.zero_grad()
-        total_actor_loss.backward(retain_graph=True)
+        total_actor_loss.backward()
         self.actor_optimizer.step()
         la = loss_act.data.item()
 

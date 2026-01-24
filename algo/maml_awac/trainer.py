@@ -190,7 +190,7 @@ class MAMLAWAC:
             meta_policy_loss = self.advantage_loss(f_policy, adapted_value_function, obs_val.to(self.device), r_obs_val.to(self.device), act_val.to(self.device))
             # (meta_policy_loss / self.num_tasks).backward()
         # policy_loss = self.advantage_loss(self.model.actor, self.model.critic, obs_val.to(self.device), r_obs_val.to(self.device), act_val.to(self.device))
-        return  meta_value_loss, meta_policy_loss
+        return  meta_value_loss, meta_policy_loss, inner_value_loss, inner_policy_loss
         # return value_loss, policy_loss
     
     
@@ -205,7 +205,7 @@ class MAMLAWAC:
             # for batch in task:
             sample = task.sample(self.batch_size)
             sample_val = task.sample(self.batch_size)
-            meta_value_loss, meta_policy_loss=self.step(sample, sample_val)
+            meta_value_loss, meta_policy_loss, inner_value_loss, inner_policy_loss = self.step(sample, sample_val)
             meta_policy_losses.append(meta_policy_loss)
             meta_value_losses.append(meta_value_loss)
             total_meta_value_loss += meta_value_loss
@@ -222,10 +222,12 @@ class MAMLAWAC:
         if data_for_logging is not None:
             data_for_logging[0].log(
                 {
-                    "meta_value_losses_mean": meta_policy_loss,
-                    "meta_policy_losses_mean": meta_value_loss,
+                    "meta_value_losses_mean": meta_value_loss,
+                    "meta_policy_losses_mean": meta_policy_loss,
                     "meta_actor_grad":meta_policy_grad,
                     "meta_critic_grad":meta_critic_grad,
+                    "inner_value_loss":inner_value_loss,
+                    "inner_policy_loss":inner_policy_loss,
                 },
                 step=data_for_logging[1],
             )

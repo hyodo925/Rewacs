@@ -8,7 +8,8 @@ import json
 import os
 import random
 import shutil
-
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -20,7 +21,7 @@ from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
-from meta_rl_navigation import MetaRLNavigation
+from rl_navigation import RLNavigation
 from utils.evaluation import eval_policy
 from utils.explorer import ExplorerCrowdSim
 from utils.models import (
@@ -29,8 +30,9 @@ from utils.models import (
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.maml_awac.trainer import MAMLAWAC
+from algo.awac.trainer import AWAC
 from algo.awac.actor import SocialActorAWAC
+from flow.model import GraphSituationFlow
 
 try:
     import wandb
@@ -87,13 +89,33 @@ else:
     print("Using CPU")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/maml_awac_config.py"
+############### policy model ##################
+# Settings
+run_dir = "wandb/awac_training/wandb/run-20260124_141502-b6znpdu2"
+
+config_path = os.path.join("configs/awac_with_flow_config.py")
+
+model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
+#################################
+
+############# flow model ####################
+# Settings
+flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260121_142518-hifx4rkp"
+
+flow_config_path = os.path.join(flow_run_dir, "files/config.py")
+
+flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth")
+
+render = False
+render_type = "video"
+
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config)
 
 cfg = config.cfg
+
 
 if cfg.log.wandb:
     # wandb.tensorboard.patch(root_logdir=f"logs/{start_time_log}")
@@ -102,9 +124,10 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_maml_awac_training",
-        dir=f"wandb/maml_awac_training",
+        name=f"{start_time_log}_awac_finetuning/seed{str(cfg.train.random_seed)}",
+        dir=f"wandb/awac_finetuning/seed{str(cfg.train.random_seed)}",
     )
+
     run.config.update(config.b.to_wandb_dict(cfg))
 
     results_log_columns = [
@@ -129,9 +152,7 @@ if cfg.log.wandb:
         trained_models_dir = os.path.join(run.dir, "trained_models")
         os.makedirs(trained_models_dir, exist_ok=True)
 
-
 seed_all(cfg.train.random_seed)
-
 ##################################################################################
 # load env
 env, robot = define_env(debug=True, config=config)
@@ -180,7 +201,7 @@ critic = SocialCritic(
     single=False,
 )
 
-model = MetaRLNavigation(actor=actor, critic=critic)
+model = RLNavigation(actor=actor, critic=critic)
 
 expl = ExplorerCrowdSim(
     env=env,
@@ -201,34 +222,75 @@ buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
+model.load_model(model_path)
+model.to(device)
 
 
-
-tasks = []
-human_nums = cfg.train.human_nums
-for i in range(cfg.train.num_tasks):
-    buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        human_num=human_nums[i],
-        scenario="square_crossing",
-        k=cfg.train.preliminary_exp_n,
-        policy=cfg.humans.policy,
-        # k=100,
-        render=False,
-    )
-    tasks.append(buffer)
-
-trainer = MAMLAWAC(
+trainer = AWAC(
     model=model,
-    tasks=tasks,
+    replay_buffer=buffer,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
     batch_size=cfg.train.batch_size,
 )
 
-loss_list = []
 
+######### flow ##########
+flow = GraphSituationFlow(
+    obs_dim=cfg.model.obs_dim,
+    h_dim=cfg.model.h_dim,
+    n_flow_blocks=cfg.model.n_flow_blocks,
+    n_flow_hidden_num=cfg.model.n_flow_hidden_num,
+    threshold_type=cfg.model.threshold_type,
+)
+flow.load_model(flow_model_path)
+flow.to(device)
+
+
+if not cfg.train.onpolicy_finetuning:
+    expl_logs = expl.exploration_k_ep_orca(
+        buffer=buffer,
+        k=cfg.train.preliminary_exp_n,
+        scenario=cfg.sim.train_scenario,
+        human_num=cfg.sim.human_num,
+        policy=cfg.humans.policy,
+        # k=100,
+        render=False,
+    )
+
+
+loss_list = []
+val_logs = eval_policy(
+    eval_env=env,
+    model=model,
+    transfunc=transfunc,
+    scenario=cfg.sim.val_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.finetune_policy,
+    convert_action=convert_action,
+    eval_episodes=env.case_size["val"],
+    phase="val",
+    render=cfg.eval.val_render,
+    render_type=cfg.eval.render_type,
+    print_results=True,
+    path=f"trajs/awac_finetuning/seed{str(cfg.train.random_seed)}/human{str(cfg.sim.human_num)}/{cfg.train.finetune_mode}/itr0",
+)
+if cfg.log.wandb:
+    wandb.log(
+        {
+            "val/reward": val_logs[0],
+            "val/cdr": val_logs[1],
+            "val/return": val_logs[2],
+            "val/success_rate": val_logs[3],
+            "val/collision_rate": val_logs[4],
+            "val/timeout_rate": val_logs[5],
+            "val/avg_nav_time": val_logs[6],
+        },
+        step=0,
+    )
+
+    val_log_data = [0] + list(val_logs)
+    val_table.add_data(*val_log_data)
 # val_logs = eval_policy(
 #     eval_env=env,
 #     model=model,
@@ -240,21 +302,24 @@ loss_list = []
 # )
 
 max_cdr = float("-inf")
-with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
+with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
         with torch.no_grad():
             # if i < 1000:
-
+            
             if not cfg.train.offline_learning:
-                expl_logs = expl.exploration_k_ep(
-                    buffer=buffer,
-                    model=model,
-                    scenario=cfg.sim.train_scenario,
-                    human_num=cfg.sim.human_num,
-                    policy=cfg.humans.policy,
-                    pbar=pbar,
-                    render=False,
-                )
+                for j in range(cfg.train.fintuning_rollout_itr):
+                    expl_logs = expl.exploration_k_ep_with_flow_mode(
+                        buffer=buffer,
+                        flow=flow,
+                        model=model,
+                        scenario=cfg.sim.val_scenario,
+                        human_num=cfg.sim.human_num,
+                        policy=cfg.humans.test_policy,
+                        pbar=pbar,
+                        mode=cfg.train.finetune_mode,
+                        render=False,
+                    )
 
                 if cfg.log.wandb:
                     run.log(
@@ -271,7 +336,7 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
-            # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
+            update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
@@ -279,18 +344,20 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
         if ((i + 1) % cfg.train.target_update_interval) == 0:
             trainer.update_target()
 
-        if (i + 1) % cfg.eval.eval_interval == 0:
+        if (i + 1) % cfg.eval.finetune_eval_interval == 0:
             val_logs = eval_policy(
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,
                 scenario=cfg.sim.val_scenario,
                 human_num=cfg.sim.human_num,
-                policy=cfg.humans.policy,
+                policy=cfg.humans.test_policy,
                 convert_action=convert_action,
                 eval_episodes=env.case_size["val"],
                 phase="val",
                 render=cfg.eval.val_render,
+                render_type=cfg.eval.render_type,
+                path=f"trajs/awac_finetuning/seed{str(cfg.train.random_seed)}/human{str(cfg.sim.human_num)}/{cfg.train.finetune_mode}/itr{str(i+1)}",
                 print_results=True,
             )
             if cfg.log.wandb:
@@ -312,56 +379,5 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 if i + 1 == cfg.train.total_it:
                     run.log({"Validation Table": val_table})
 
-            update_best = val_logs[1] > max_cdr
-            if update_best:
-                best_model = copy.deepcopy(model.state_dict())
-                best_step_num = i + 1
-                max_cdr = val_logs[1]
-
-            if cfg.log.save_model:
-                model.save_model(trained_models_dir + "/model_{}.pth".format(i + 1))
-                if update_best:
-                    model.save_model(trained_models_dir + "/model_best.pth")
-
-# model.to(device)
-# fig, ax = plt.subplots(figsize=(7, 7))
-# eval_orca_policy(eval_env=env, psr=psr, transfunc=transfunc, eval_episodes=500)
-render = cfg.eval.render
-render_type = cfg.eval.render_type
-if render and (render_type == "video"):
-    if cfg.log.wandb:
-        path_v = os.path.join(run.dir, "videos/training_results")
-        os.makedirs(path_v, exist_ok=True)
-    else:
-        path_v = "videos/{}_{}_{}".format(start_time_log, trainer.alg_name, "CrowdSim")
-        os.mkdir(path_v)
-else:
-    path_v = None
-
-model.load_state_dict(best_model)
-print(f"The best model number is {best_step_num}")
-
-test_logs = eval_policy(
-    eval_env=env,
-    model=model,
-    transfunc=transfunc,
-    convert_action=convert_action,
-    eval_episodes=env.case_size["test"],
-    phase="test",
-    render=render,
-    render_type=render_type,
-    path=path_v,
-    print_results=True,
-)
-
-
 if cfg.log.wandb:
-    # run.log({"Validation Table": val_table})
-
-    test_log_columns = ["bset_step_num"] + results_log_columns
-    test_log_data = [best_step_num] + list(test_logs)
-    test_table = wandb.Table(columns=test_log_columns)
-    test_table.add_data(*test_log_data)
-
-    run.log({"Test Table": test_table})
     wandb.finish()

@@ -22,7 +22,7 @@ from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from meta_rl_navigation import MetaRLNavigation
 from algo.meta_critic.eval import eval_policy
-from utils.explorer import ExplorerCrowdSim
+from algo.meta_critic.explorer import ExplorerCrowdSim
 from utils.models import (
     SocialCritic,
 )
@@ -30,7 +30,7 @@ from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
 from algo.meta_critic.actor import SocialActorMetaCriticAWAC
-from algo.meta_critic.trainer import MetaCriticAWAC
+from algo.meta_critic.trainer_hotplug import MetaCriticAWAC
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:
@@ -229,8 +229,9 @@ trainer = MetaCriticAWAC(
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     k=cfg.train.preliminary_exp_n,
-    scenario="square_crossing",
+    scenario=cfg.sim.train_scenario,
     human_num=cfg.sim.human_num,
+    policy=cfg.humans.policy,
     # k=100,
     render=False,
 )
@@ -238,8 +239,9 @@ expl_logs = expl.exploration_k_ep_orca(
 expl_logs_val = expl.exploration_k_ep_orca(
     buffer=buffer_val,
     k=cfg.train.preliminary_exp_n,
-    scenario="circle_crossing",
+    scenario=cfg.sim.val_scenario,
     human_num=cfg.sim.human_num,
+    policy=cfg.humans.policy,
     # k=100,
     render=False,
 )
@@ -257,6 +259,9 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 expl_logs = expl.exploration_k_ep(
                     buffer=buffer,
                     model=model,
+                    scenario=cfg.sim.train_scenario,
+                    human_num=cfg.sim.human_num,
+                    policy=cfg.humans.policy,
                     pbar=pbar,
                     render=False,
                 )
@@ -288,9 +293,12 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,
+                scenario=cfg.sim.test_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.policy,
                 convert_action=convert_action,
                 eval_episodes=env.case_size["val"],
-                scenario="val",
+                phase="val",
                 render=cfg.eval.val_render,
                 print_results=True,
             )
@@ -346,9 +354,12 @@ test_logs = eval_policy(
     eval_env=env,
     model=model,
     transfunc=transfunc,
+    scenario=cfg.sim.test_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.policy,
     convert_action=convert_action,
     eval_episodes=env.case_size["test"],
-    scenario="test",
+    phase="test",
     render=render,
     render_type=render_type,
     path=path_v,

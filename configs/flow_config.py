@@ -20,8 +20,10 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "square_crossing"
+    train_scenario = "square_crossing"
+    val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
+    finetune_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
 
@@ -37,6 +39,7 @@ class Simulation:
     square_width = 20
     circle_radius = 4
     human_num = 5
+    human_num_val = 10
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -45,6 +48,7 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "socialforce"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"

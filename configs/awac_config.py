@@ -20,21 +20,23 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "square_crossing"
+    train_scenario = "square_crossing"
+    val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
-    # train_val_scenario = "square_crossing"
+    finetune_scenario = "circle_crossing"
+    # train_scenario = "square_crossing"
     # test_scenario = "square_crossing"
 
-    # rain_val_scenario = "corridor"
+    # train_scenario = "corridor"
     # test_scenario = "corridor"
 
-    # train_val_scenario = "monotonic"
+    # train_scenario = "monotonic"
     # test_scenario = "monotonic"
 
-    # train_val_scenario = "alone"
+    # train_scenario = "alone"
     # test_scenario = "alone"
 
-    square_width = 20
+    square_width = 10
     circle_radius = 4
     human_num = 5
     nonstop_human = False
@@ -45,6 +47,7 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "orca"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -84,10 +87,11 @@ class Transfunc:
 
 class Train:
     random_seed = 17
-    offline_learning = False
-    lr = 3e-4
+    offline_learning = True
+    lr = 1e-4
     preliminary_exp_n = 200
     total_it = 10000
+    finetune_total_it = 100
     batch_size = 100
     buffer_capacity = 100000
     actor_update_interval = 2
@@ -96,19 +100,20 @@ class Train:
     training_alg = "AWAC"
 
     onpolicy_finetuning = True
-    fintuning_rollout_itr = 1
+    fintuning_rollout_itr = 5
 
 
 class Evaluation:
-    eval_interval = 5
+    eval_interval = 1000
     final_eval_num = 500
+    finetune_eval_interval = 1
     val_render = False
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:
-    wandb_project = "AWAC_fine_tuning"
+    wandb_project = "AWAC_Training"
     # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True

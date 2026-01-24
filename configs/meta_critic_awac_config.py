@@ -20,8 +20,10 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "square_crossing"
+    train_scenario = "square_crossing"
+    val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
+    finetune_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
 
@@ -34,9 +36,9 @@ class Simulation:
     # train_val_scenario = "alone"
     # test_scenario = "alone"
 
-    square_width = 20
+    square_width = 10
     circle_radius = 4
-    human_num = 10
+    human_num = 5
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -45,6 +47,8 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "orca"
+    finetune_policy = "socialforce"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -90,6 +94,7 @@ class Train:
     lr = 3e-4
     preliminary_exp_n = 200
     total_it = 10000
+    finetune_total_it = 10
     batch_size = 100
     buffer_capacity = 100000
     actor_update_interval = 2
@@ -97,24 +102,26 @@ class Train:
     polyak = 0.995
     training_alg = "Meta_Critic_AWAC"
 
-    onpolicy_finetuning = False
+    onpolicy_finetuning = True
     fintuning_rollout_itr = 5
+    finetune_mode = "learning_based_only" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
 
 
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
+    finetune_interval = 1
     val_render = False
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:
     wandb_project = "Meta_Critic_AWAC_training"
-    wandb_mode = "offline"
-    # wandb_mode = "online"
-    wandb = False
-    save_model = False
+    # wandb_mode = "offline"
+    wandb_mode = "online"
+    wandb = True
+    save_model = True
 
 
 b = FlexibleConfigBuilder()

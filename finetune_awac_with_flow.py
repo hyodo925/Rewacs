@@ -99,7 +99,7 @@ model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
 ############# flow model ####################
 # Settings
-flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260113_141037-kzovrg3f"
+flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260121_142518-hifx4rkp"
 
 flow_config_path = os.path.join(flow_run_dir, "files/config.py")
 
@@ -256,6 +256,9 @@ if not cfg.train.onpolicy_finetuning:
     expl_logs = expl.exploration_k_ep_orca(
         buffer=buffer,
         k=cfg.train.preliminary_exp_n,
+        scenario=cfg.sim.train_scenario,
+        human_num=cfg.sim.human_num,
+        policy=cfg.humans.policy,
         # k=100,
         render=False,
     )
@@ -274,7 +277,7 @@ loss_list = []
 # )
 
 max_cdr = float("-inf")
-with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
+with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
         with torch.no_grad():
             # if i < 1000:
@@ -285,6 +288,9 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                         buffer=buffer,
                         flow=flow,
                         model=model,
+                        scenario=cfg.sim.val_scenario,
+                        human_num=cfg.sim.human_num,
+                        policy=cfg.humans.test_policy,
                         pbar=pbar,
                         render=False,
                     )
@@ -312,15 +318,20 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
         if ((i + 1) % cfg.train.target_update_interval) == 0:
             trainer.update_target()
 
-        if (i + 1) % cfg.eval.eval_interval == 0:
+        if (i + 1) % cfg.eval.finetune_eval_interval == 0:
             val_logs = eval_policy(
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.test_policy,
                 convert_action=convert_action,
                 eval_episodes=env.case_size["val"],
-                scenario="val",
+                phase="val",
                 render=cfg.eval.val_render,
+                render_type=cfg.eval.render_type,
+                path="trajs/",
                 print_results=True,
             )
             if cfg.log.wandb:
@@ -375,9 +386,12 @@ test_logs = eval_policy(
     eval_env=env,
     model=model,
     transfunc=transfunc,
+    scenario=cfg.sim.val_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.test_policy,
     convert_action=convert_action,
     eval_episodes=env.case_size["test"],
-    scenario="test",
+    phase="test",
     render=render,
     render_type=render_type,
     path=path_v,

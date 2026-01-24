@@ -156,7 +156,7 @@ class GraphSituationFlow(nn.Module):
         else:
             return torch.mean(0.5 * torch.sum(z**2, dim=(1,)) - log_det_j) / (z.shape[1])
     
-    def plot_log_prob_comparison(self, model, train_loader, ood_loader, switching_score, device, save_path=None):
+    def plot_log_prob_comparison(self, model, train_loader, ood_loader,  device, save_path=None):
         model.eval()
         train_scores = []
         ood_scores = []
@@ -176,7 +176,7 @@ class GraphSituationFlow(nn.Module):
 
         sns.histplot(train_scores, color="gray", label="Train (ID)", kde=True, stat="density", alpha=0.6)
         sns.histplot(ood_scores, color="crimson", label="Test (OOD)", kde=True, stat="density", alpha=0.6)
-        plt.axvline(switching_score.item(),color="blue",linestyle="--",linewidth=2,label=f"Switching threshold = {switching_score.item():.4f}")
+        plt.axvline(self.theta.item(),color="blue",linestyle="--",linewidth=2,label=f"Switching threshold = {self.theta.item():.4f}")
         plt.xlabel("Switching score τ", fontsize=14)
         plt.ylabel("Density", fontsize=14)
         plt.title("Log-Probability Distribution Comparison", fontsize=15)

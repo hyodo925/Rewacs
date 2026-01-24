@@ -109,7 +109,17 @@ class SocialActorMetaCriticAWAC(nn.Module):
         log_prob = normal.log_prob(pre_tanh_value).sum(dim=-1, keepdim=True)
         
         return action, log_prob, mean, std
-    
+
+    def get_log_prob_with_params(self, data, action, params):
+
+        out = functional_call(self, params, (data,))
+        mean, log_std, _ = out
+
+        std = torch.exp(log_std)
+        dist = Normal(mean, std)
+        logp_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+
+        return logp_prob
 class SocialActorMetaCriticCalQL(nn.Module):
     def __init__(
         self,
@@ -207,6 +217,17 @@ class SocialActorMetaCriticCalQL(nn.Module):
         log_prob = normal.log_prob(pre_tanh_value).sum(dim=-1, keepdim=True)
         
         return action, log_prob, mean, std
+    
+    def get_log_prob_with_params(self, data, action, params):
+
+        out = functional_call(self, params, (data,))
+        mean, log_std, _ = out
+
+        std = torch.exp(log_std)
+        dist = Normal(mean, std)
+        logp_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+
+        return logp_prob
     
 
 class SocialActorMetaCriticFQL(nn.Module):

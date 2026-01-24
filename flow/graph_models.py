@@ -101,7 +101,7 @@ class GraphAttentionLayer(nn.Module):
 
         self.attn = nn.Linear(self.h_dim, 1, bias=False)
         self.activation = nn.LeakyReLU(negative_slope=alpha)
-        self.softmax = nn.Softmax(dim=1)
+        self.softmax = nn.Softmax(dim=2)
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, h):

@@ -123,6 +123,8 @@ class AWAC:
                     },
                     step=data_for_logging[1],
                 )
+        
+        return lc, la
 
     def update_target(self):
         for param, target_param in zip(

@@ -20,7 +20,8 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "circle_crossing"
+    train_scenario = "square_crossing"
+    val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"

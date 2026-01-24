@@ -20,8 +20,10 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "circle_crossing"
+    train_scenario = "square_crossing"
+    val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
+    finetune_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
 
@@ -34,7 +36,7 @@ class Simulation:
     # train_val_scenario = "alone"
     # test_scenario = "alone"
 
-    square_width = 20
+    square_width = 10
     circle_radius = 4
     human_num = 5
     nonstop_human = False

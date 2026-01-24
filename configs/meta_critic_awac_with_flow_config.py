@@ -47,6 +47,8 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "socialforce"
+    finetune_policy = "socialforce"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -76,6 +78,13 @@ class Model:
 
     actor_integrator_enc_hdims = [64]
     critic_integrator_enc_hdims = [64]
+    meta_critic_integrator_enc_hdims = 127
+    other_output_dim = 100
+
+    h_dim = 32
+    n_flow_blocks = 10
+    n_flow_hidden_num = 3
+    threshold_type = "mean"
 
 
 class Transfunc:
@@ -86,7 +95,7 @@ class Transfunc:
 
 class Train:
     random_seed = 17
-    offline_learning = True
+    offline_learning = False
     lr = 3e-4
     preliminary_exp_n = 200
     total_it = 10000
@@ -96,21 +105,24 @@ class Train:
     actor_update_interval = 2
     target_update_interval = 1
     polyak = 0.995
-    human_nums = [6,7,8,9,10]
-    num_tasks = len(human_nums)
-    training_alg = "MAML_AWAC"
+    training_alg = "Meta_Critic_AWAC"
+
+    onpolicy_finetuning =False
+    fintuning_rollout_itr = 5
+    finetune_mode = "learning_based_only" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
 
 
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    val_render = False
+    finetune_interval = 1
+    val_render = True
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:
-    wandb_project = "MAML_AWAC_training"
+    wandb_project = "Meta_Critic_AWAC_training"
     # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True

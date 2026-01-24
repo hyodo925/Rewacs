@@ -1,5 +1,6 @@
 import torch as torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class MetaCriticNet(nn.Module):
     def __init__(self, hidden_dim):
@@ -21,11 +22,8 @@ class MetaCriticGraphNet(nn.Module):
         super().__init__()
         self.integrator = integrator
         self.single = single
-        self.net1 = self.make_mlp([D] + h_dims + [d], activation=activation)
-
-        if not single:
-            self.net2 = self.make_mlp([D] + h_dims + [d], activation=activation)
-
+        self.net1 = self.make_mlp([D] + h_dims , activation=activation)
+        self.output_layer = nn.Linear(h_dims[-1], d)
         # self.apply(weights_init_)
 
     def make_mlp(self, mlp_dims, activation="leaky_relu", last_act=False):
@@ -46,6 +44,9 @@ class MetaCriticGraphNet(nn.Module):
         if self.integrator != None:
             data = self.integrator(*obs)
         data = torch.cat([data, act, other_output], 1)
-        x = nn.functional.softplus(self.net1(data))
+        x = self.net1(data)
+        x = F.normalize(x, p=2, dim=-1, eps=1e-8)
+        x = self.output_layer(x)
+        x = nn.functional.softplus(x)
         return torch.mean(x)
     

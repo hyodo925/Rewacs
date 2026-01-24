@@ -53,8 +53,10 @@ class CrowdSim:
         self.case_size = None
         self.case_counter = None
         self.randomize_attributes = None
-        self.train_val_scenario = None
+        self.train_scenario = None
+        self.val_scenario = None
         self.test_scenario = None
+        self.finetune_scenario = None
         self.current_scenario = None
         self.square_width = None
         self.circle_radius = None
@@ -103,8 +105,10 @@ class CrowdSim:
             "val": config.env.val_size,
             "test": config.env.test_size,
         }
-        self.train_val_scenario = config.sim.train_val_scenario
+        self.train_scenario = config.sim.train_scenario
+        self.val_scenario = config.sim.val_scenario
         self.test_scenario = config.sim.test_scenario
+        self.finetune_scenario = config.sim.finetune_scenario
         self.square_width = config.sim.square_width
         self.circle_radius = config.sim.circle_radius
         self.human_num = config.sim.human_num
@@ -113,14 +117,14 @@ class CrowdSim:
         self.centralized_planning = config.sim.centralized_planning
         self.case_counter = {"train": 0, "test": 0, "val": 0}
 
-        human_policy = config.humans.policy
+        self.human_policy = config.humans.policy
 
         if self.centralized_planning:
-            if human_policy == "socialforce":
+            if self.human_policy == "socialforce":
                 logging.warning(
                     "Current socialforce policy only works in decentralized way with visible robot!"
                 )
-            self.centralized_planner = policy_factory["centralized_" + human_policy]()
+            self.centralized_planner = policy_factory["centralized_" + self.human_policy]()
 
         logging.info(f"human number: {self.human_num}")
         if self.randomize_attributes:
@@ -128,7 +132,7 @@ class CrowdSim:
         else:
             logging.info("Not randomize human's radius and preferred speed")
         logging.info(
-            f"Training simulation: {self.train_val_scenario}, test simulation: {self.test_scenario}"
+            f"Training simulation: {self.train_scenario}, test simulation: {self.test_scenario}"
         )
         logging.info(
             f"Square width: {self.square_width}, circle width: {self.circle_radius}"
@@ -311,6 +315,7 @@ class CrowdSim:
         if self.case_counter[phase] >= 0:
             np.random.seed(base_seed[phase] + self.case_counter[phase])
             random.seed(base_seed[phase] + self.case_counter[phase])
+            # print(phase, base_seed[phase] + self.case_counter[phase])
             if phase == "test":
                 logging.debug(
                     f"current test seed is:{base_seed[phase] + self.case_counter[phase]}"
@@ -320,7 +325,14 @@ class CrowdSim:
                 human_num = 1
                 self.current_scenario = "circle_crossing"
             else:
-                self.current_scenario = self.test_scenario
+                if phase == "train":
+                    self.current_scenario = self.train_scenario
+                elif phase == "val":
+                    self.current_scenario = self.val_scenario
+                elif phase == "test":
+                    self.current_scenario = self.test_scenario
+                else:
+                    self.current_scenario = self.finetune_scenario
                 human_num = self.human_num
             self.humans = []
             if not self.current_scenario == "alone":
@@ -381,9 +393,22 @@ class CrowdSim:
     def set_human_num(self, human_num):
         self.human_num = human_num
 
-    def set_explorer_scenario(self, scenario):
+    def set_train_scenario(self, scenario):
+        self.train_scenario = scenario
+
+    def set_val_scenario(self, scenario):
+        self.val_scenario = scenario
+
+    def set_test_scenario(self, scenario):
         self.test_scenario = scenario
 
+    def set_finetune_scenario(self, scenario):
+        self.finetune_scenario = scenario
+
+    def set_policy(self, policy):
+        self.human_policy = policy
+        self.centralized_planner = policy_factory["centralized_" + self.human_policy]()
+        
     def step(self, action, update=True):
         """
         Compute actions for all agents, detect collision, update environment and return (ob, reward, done, info)

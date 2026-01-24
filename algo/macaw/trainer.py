@@ -50,7 +50,7 @@ class MACAW:
         self.device = model.device
         self.num_tasks = num_tasks
 
-        self.q = False
+        self.q = True
         self.huber = True
         self.log_targets = True
         self.no_norm = True
@@ -61,14 +61,14 @@ class MACAW:
         self._value_lrs = None
         self._q_lrs = None
         self._adv_coef = None
-        self.advantage_head_coef = None
-        # self.advantage_head_coef = 0.01
+        # self.advantage_head_coef = None
+        self.advantage_head_coef = 0.01
 
 
         self.exp_advantage_clip = 20.0
         self._advantage_clamp = np.log(self.exp_advantage_clip)
         self._action_sigma = 0.2
-        self._grad_clip = 1e9
+        self._grad_clip = 1e2
         self.maml_steps = 1
         self.value_reg = 0
         self.inner_policy_lr = 0.001
@@ -77,25 +77,19 @@ class MACAW:
         self.target_vf_alpha = 0.9
         self.adaptation_temperature = 1
 
-        # if self._policy_lrs is None:
-        #     # self._policy_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self._args.inner_policy_lr)) if not self._args.multitask else 10000.).to(self.device))
-        #     #                     for p in self._adaptation_policy.adaptation_parameters()]
-        #     # self._value_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self._args.inner_value_lr)) if not self._args.multitask else 10000.).to(self.device))
-        #     #                    for p in self._value_function.adaptation_parameters()]
-        #     # self._q_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self._args.inner_value_lr)) if not self._args.multitask else 10000.).to(self.device))
-        #     #                    for p in self._q_function.adaptation_parameters()]
-        #     self._policy_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self.inner_policy_lr))).to(self.device))
-        #                         for p in self.model.actor.parameters()]
-        #     self._value_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self.inner_value_lr))).to(self.device))
-        #                        for p in self.model.value.parameters()]
-        #     self._q_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self.inner_value_lr))).to(self.device))
-        #                        for p in self.model.critic.parameters()]
+        if self._policy_lrs is None:
+            self._policy_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self.inner_policy_lr))).to(self.device))
+                                for p in self.model.actor.parameters()]
+            self._value_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self.inner_value_lr))).to(self.device))
+                               for p in self.model.value.parameters()]
+            self._q_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(self.inner_value_lr))).to(self.device))
+                               for p in self.model.critic.parameters()]
         if self.advantage_head_coef is not None:
             self._adv_coef = torch.nn.Parameter(torch.tensor(float(np.log(self.advantage_head_coef))).to(self.device))
                                                                  
-        # self._policy_lr_optimizer = O.Adam(self._policy_lrs, lr=self.lrlr)
-        # self._value_lr_optimizer = O.Adam(self._value_lrs, lr=self.lrlr)
-        # self._q_lr_optimizer = O.Adam(self._q_lrs, lr=self.lrlr)
+        self._policy_lr_optimizer = O.Adam(self._policy_lrs, lr=self.lrlr)
+        self._value_lr_optimizer = O.Adam(self._value_lrs, lr=self.lrlr)
+        self._q_lr_optimizer = O.Adam(self._q_lrs, lr=self.lrlr)
         if self.advantage_head_coef is not None:
             self._adv_coef_optimizer = O.Adam([self._adv_coef], lr=self.lrlr)
 
@@ -161,27 +155,27 @@ class MACAW:
                 normalized_advantages = (1 / self.adaptation_temperature) * (advantages - advantages.mean()) / advantages.std()
                 weights = normalized_advantages.clamp(max=self._advantage_clamp).exp()
 
-        # if self.advantage_head_coef is not None:
-        #     # action_mu, advantage_prediction = policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), act.squeeze().to(self.device), self.add_task_description(task_idx))
-        #     action_mu, advantage_prediction = policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), act.squeeze().to(self.device))
-        # else:
-        #     # action_mu = policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), act=None, task_idx=self.add_task_description(task_idx))
-        #     action_mu = policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), act=None)
-        # action_sigma = torch.empty_like(action_mu).fill_(self._action_sigma)
-        # action_distribution = D.Normal(action_mu, action_sigma)
-        # action_log_probs = action_distribution.log_prob(act.squeeze().to(self.device)).sum(-1)
-        action_log_probs = policy.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)
+        if self.advantage_head_coef is not None:
+            # action_mu, advantage_prediction = policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), act.squeeze().to(self.device), self.add_task_description(task_idx))
+            action_mu, advantage_prediction = policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), act.squeeze().to(self.device))
+        else:
+            # action_mu = policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), act=None, task_idx=self.add_task_description(task_idx))
+            action_mu, _= policy((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),), action=None)
+        action_sigma = torch.empty_like(action_mu).fill_(self._action_sigma)
+        action_distribution = D.Normal(action_mu, action_sigma)
+        action_log_probs = action_distribution.log_prob(act.squeeze().to(self.device)).sum(-1)
+        # action_log_probs = policy.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)
         losses = -(action_log_probs * weights)
 
         if iweights is not None:
             losses = losses * iweights
         
         adv_prediction_loss = None
-        # if inner:
-        #     if self.advantage_head_coef is not None:
-        #         adv_prediction_loss = F.softplus(self._adv_coef) *  (advantage_prediction.squeeze() - advantages) ** 2
-        #         losses = losses + adv_prediction_loss
-        #         adv_prediction_loss = adv_prediction_loss.mean()
+        if inner:
+            if self.advantage_head_coef is not None:
+                adv_prediction_loss = F.softplus(self._adv_coef) *  (advantage_prediction.squeeze() - advantages) ** 2
+                losses = losses + adv_prediction_loss
+                adv_prediction_loss = adv_prediction_loss.mean()
 
         return losses.mean(), advantages.mean(), weights, adv_prediction_loss
 
@@ -190,7 +184,7 @@ class MACAW:
             grad = torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         else:
             grad = None
-
+            
         optimizer.step()
         optimizer.zero_grad()
         
@@ -237,7 +231,7 @@ class MACAW:
             # Adapt value function and collect meta-gradients
             ##################################################################################################
             vf = self.model.value
-            vf.train()
+            # vf.train()
             vf_target = deepcopy(vf)
             # opt = O.SGD([{'params': p, 'lr': None} for p in vf.adaptation_parameters()])
             # opt = O.SGD([{'params': p, 'lr': None} for p in vf.parameters()])
@@ -308,7 +302,7 @@ class MACAW:
             # opt = O.SGD([{'params': p, 'lr': None} for p in self.model.actor.adaptation_parameters()])
             # opt = O.SGD([{'params': p, 'lr': None} for p in self.model.actor.parameters()])
             opt = torch.optim.SGD(self.model.actor.parameters(), lr=self.inner_policy_lr)
-            self.model.actor.train()
+            # self.model.actor.train()
             # with higher.innerloop_ctx(self.model.actor, opt, override={'lr': [F.softplus(l) for l in self._policy_lrs]}, copy_initial_weights=False) as (f_adaptation, diff_policy_opt):
             with higher.innerloop_ctx(self.model.actor, opt, copy_initial_weights=False) as (f_adaptation, diff_policy_opt):
                 if self.num_tasks > 1:
@@ -350,12 +344,12 @@ class MACAW:
         # Meta-update adaptation policy [L15]
         grad_actor = self.update_model(self.model.actor, self.actor_optimizer, clip=self._grad_clip)
 
-        # if self.lrlr > 0:
-        #     self.update_params(self._value_lrs, self._value_lr_optimizer)
-        #     self.update_params(self._q_lrs, self._q_lr_optimizer)
-        #     self.update_params(self._policy_lrs, self._policy_lr_optimizer)
-        #     if self.advantage_head_coef is not None:
-        #         self.update_params([self._adv_coef], self._adv_coef_optimizer)
+        if self.lrlr > 0:
+            self.update_params(self._value_lrs, self._value_lr_optimizer)
+            self.update_params(self._q_lrs, self._q_lr_optimizer)
+            self.update_params(self._policy_lrs, self._policy_lr_optimizer)
+            if self.advantage_head_coef is not None:
+                self.update_params([self._adv_coef], self._adv_coef_optimizer)
         # return rollouts, test_rewards, train_rewards, meta_value_losses, meta_policy_losses, None, successes
 
         if data_for_logging is not None:

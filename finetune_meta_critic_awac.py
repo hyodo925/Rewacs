@@ -30,10 +30,9 @@ from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
 from algo.meta_critic.actor import SocialActorMetaCriticAWAC
-from algo.meta_critic.virtual_updater import VirtualActorUpdater, Hot_Plug
-from algo.meta_critic.trainer import MetaCriticAWAC
+from algo.meta_critic.trainer_hotplug import MetaCriticAWAC
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
-
+from flow.model import GraphSituationFlow
 try:
     import wandb
 except ModuleNotFoundError:
@@ -128,9 +127,28 @@ seed_all(cfg.train.random_seed)
 
 #################################
 # Settings
-run_dir = "wandb/meta_critic_awac_training/wandb/run-20260115_204322-8x3vaf4c"
+run_dir = "wandb/meta_critic_awac_training/wandb/run-20260122_134225-chfd9otf"
 
 model_path = os.path.join(run_dir, "files/trained_models/model_10000.pth")
+
+############# flow model ####################
+# Settings
+flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260113_141037-kzovrg3f"
+
+flow_config_path = os.path.join(flow_run_dir, "files/config.py")
+
+flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth")
+
+render = False
+render_type = "video"
+
+flow_spec = importlib.util.spec_from_file_location("config", flow_config_path)
+
+flow_config = importlib.util.module_from_spec(flow_spec)
+flow_spec.loader.exec_module(flow_config)
+
+flow_cfg = flow_config.cfg
+
 
 ##################################################################################
 # load env
@@ -224,31 +242,76 @@ trainer = MetaCriticAWAC(
     batch_size=cfg.train.batch_size,
 )
 
+######### flow ########
+flow = GraphSituationFlow(
+    obs_dim=cfg.model.obs_dim,
+    h_dim=flow_cfg.model.h_dim,
+    n_flow_blocks=flow_cfg.model.n_flow_blocks,
+    n_flow_hidden_num=flow_cfg.model.n_flow_hidden_num,
+    threshold_type=flow_cfg.model.threshold_type,
+)
+flow.load_model(flow_model_path)
+flow.to(device)
 
 if not cfg.train.onpolicy_finetuning:
     expl_logs = expl.exploration_k_ep_orca(
         buffer=buffer,
         k=cfg.train.preliminary_exp_n,
-        scenario="circle_crossing",
+        scenario=cfg.sim.train_scenario,
         human_num=cfg.sim.human_num,
+        policy=cfg.humans.policy,
         # k=100,
         render=False,
     )
 
 loss_list = []
+val_logs = eval_policy(
+    eval_env=env,
+    model=model,
+    transfunc=transfunc,
+    scenario=cfg.sim.val_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.finetune_policy,
+    convert_action=convert_action,
+    eval_episodes=env.case_size["val"],
+    phase="val",
+    render=cfg.eval.val_render,
+    render_type=cfg.eval.render_type,
+    print_results=True,
+    path="trajs/"
+)
+if cfg.log.wandb:
+    wandb.log(
+        {
+            "val/reward": val_logs[0],
+            "val/cdr": val_logs[1],
+            "val/return": val_logs[2],
+            "val/success_rate": val_logs[3],
+            "val/collision_rate": val_logs[4],
+            "val/timeout_rate": val_logs[5],
+            "val/avg_nav_time": val_logs[6],
+        },
+        step=0,
+    )
 
+    val_log_data = [0] + list(val_logs)
+    val_table.add_data(*val_log_data)
 
 max_cdr = float("-inf")
-with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
+with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
         with torch.no_grad():
             # if i < 1000:
 
             if not cfg.train.offline_learning:
                 for j in range(cfg.train.fintuning_rollout_itr):
-                    expl_logs = expl.exploration_k_ep(
+                    expl_logs = expl.exploration_k_ep_with_flow(
                         buffer=buffer,
                         model=model,
+                        flow=flow,
+                        scenario=cfg.sim.val_scenario,
+                        human_num=cfg.sim.human_num,
+                        policy=cfg.humans.finetune_policy,
                         pbar=pbar,
                         render=False,
                     )
@@ -275,16 +338,21 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
         if ((i + 1) % cfg.train.target_update_interval) == 0:
             trainer.update_target()
 
-        if (i + 1) % cfg.eval.eval_interval == 0:
+        if (i + 1) % cfg.eval.finetune_interval == 0:
             val_logs = eval_policy(
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.finetune_policy,
                 convert_action=convert_action,
                 eval_episodes=env.case_size["val"],
-                scenario="val",
+                phase="val",
                 render=cfg.eval.val_render,
+                render_type=cfg.eval.render_type,
                 print_results=True,
+                path="trajs/"
             )
             if cfg.log.wandb:
                 wandb.log(
@@ -305,56 +373,60 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 if i + 1 == cfg.train.total_it:
                     run.log({"Validation Table": val_table})
 
-            update_best = val_logs[1] > max_cdr
-            if update_best:
-                best_model = copy.deepcopy(model.state_dict())
-                best_step_num = i + 1
-                max_cdr = val_logs[1]
+            # update_best = val_logs[1] > max_cdr
+            # if update_best:
+            #     best_model = copy.deepcopy(model.state_dict())
+            #     best_step_num = i + 1
+            #     max_cdr = val_logs[1]
 
-            if cfg.log.save_model:
-                model.save_model(trained_models_dir + "/model_{}.pth".format(i + 1))
-                if update_best:
-                    model.save_model(trained_models_dir + "/model_best.pth")
+            # if cfg.log.save_model:
+            #     model.save_model(trained_models_dir + "/model_{}.pth".format(i + 1))
+            #     if update_best:
+            #         model.save_model(trained_models_dir + "/model_best.pth")
+
 
 # model.to(device)
 # fig, ax = plt.subplots(figsize=(7, 7))
 # eval_orca_policy(eval_env=env, psr=psr, transfunc=transfunc, eval_episodes=500)
-render = cfg.eval.render
-render_type = cfg.eval.render_type
-if render and (render_type == "video"):
-    if cfg.log.wandb:
-        path_v = os.path.join(run.dir, "videos/training_results")
-        os.makedirs(path_v, exist_ok=True)
-    else:
-        path_v = "videos/{}_{}_{}".format(start_time_log, trainer.alg_name, "CrowdSim")
-        os.mkdir(path_v)
-else:
-    path_v = None
+# render = cfg.eval.render
+# render_type = cfg.eval.render_type
+# if render and (render_type == "video"):
+#     if cfg.log.wandb:
+#         path_v = os.path.join(run.dir, "videos/training_results")
+#         os.makedirs(path_v, exist_ok=True)
+#     else:
+#         path_v = "videos/{}_{}_{}".format(start_time_log, trainer.alg_name, "CrowdSim")
+#         os.mkdir(path_v)
+# else:
+#     path_v = None
 
-model.load_state_dict(best_model)
-print(f"The best model number is {best_step_num}")
+# model.load_state_dict(best_model)
+# print(f"The best model number is {best_step_num}")
 
-test_logs = eval_policy(
-    eval_env=env,
-    model=model,
-    transfunc=transfunc,
-    convert_action=convert_action,
-    eval_episodes=env.case_size["test"],
-    scenario="test",
-    render=render,
-    render_type=render_type,
-    path=path_v,
-    print_results=True,
-)
+# test_logs = eval_policy(
+#     eval_env=env,
+#     model=model,
+#     transfunc=transfunc,
+#     scenario=cfg.sim.val_scenario,
+#     human_num=cfg.sim.human_num,
+#     policy=cfg.humans.policy,
+#     convert_action=convert_action,
+#     eval_episodes=env.case_size["test"],
+#     phase="test",
+#     render=render,
+#     render_type=render_type,
+#     path=path_v,
+#     print_results=True,
+# )
 
 
 if cfg.log.wandb:
     # run.log({"Validation Table": val_table})
 
-    test_log_columns = ["bset_step_num"] + results_log_columns
-    test_log_data = [best_step_num] + list(test_logs)
-    test_table = wandb.Table(columns=test_log_columns)
-    test_table.add_data(*test_log_data)
+    # test_log_columns = ["bset_step_num"] + results_log_columns
+    # test_log_data = [best_step_num] + list(test_logs)
+    # test_table = wandb.Table(columns=test_log_columns)
+    # test_table.add_data(*test_log_data)
 
-    run.log({"Test Table": test_table})
+    # run.log({"Test Table": test_table})
     wandb.finish()

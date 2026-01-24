@@ -79,6 +79,14 @@ else:
     print("Using CPU")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
+############# flow model ####################
+# Settings
+flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260121_142518-hifx4rkp"
+
+flow_config_path = os.path.join(flow_run_dir, "files/config.py")
+
+flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth")
+
 config_path = "./configs/flow_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
@@ -142,7 +150,7 @@ def convert_action(action):
     return action
 
 
-model = GraphSituationFlow(
+flow = GraphSituationFlow(
     obs_dim=cfg.model.obs_dim,
     h_dim=cfg.model.h_dim,
     n_flow_blocks=cfg.model.n_flow_blocks,
@@ -150,7 +158,8 @@ model = GraphSituationFlow(
     threshold_type=cfg.model.threshold_type,
 )
 
-model.to(device)
+flow.load_model(flow_model_path)
+flow.to(device)
 
 expl = ExplorerCrowdSim(
     env=env,
@@ -179,8 +188,8 @@ expl_logs = expl.exploration_k_ep_orca(
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer_val,
     scenario=cfg.sim.val_scenario,
-    human_num=cfg.sim.human_num,
-    policy=cfg.humans.policy,
+    human_num=cfg.sim.human_num_val,
+    policy=cfg.humans.test_policy,
     k=cfg.train.preliminary_exp_n,
     # k=100,
     render=False,
@@ -193,7 +202,7 @@ max_cdr = float("-inf")
 lr = cfg.train.lr
 epoch_num = cfg.train.total_it
 
-flow_optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+flow_optimizer = torch.optim.Adam(flow.parameters(), lr=lr)
 
 # obs_data_list = []
 # r_obs_data_list = []
@@ -207,16 +216,24 @@ flow_optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 # data_for_set_th = (obs_data_stack, r_obs_data_stack)
 # data_for_set_th = obs_data_stack
 
-grevnet_training(
-    model=model,
-    data_loader=buffer,
-    validation=buffer_val,
-    flow_optimizer=flow_optimizer,
-    epoch_num=epoch_num,
-    model_dir=trained_models_dir ,
-    model_save_freq=cfg.eval.eval_interval,
-    data_for_logging= run if cfg.log.wandb else None,
-    # data_th=data_for_set_th,
+# grevnet_training(
+#     model=flow,
+#     data_loader=buffer,
+#     validation=buffer_val,
+#     flow_optimizer=flow_optimizer,
+#     epoch_num=epoch_num,
+#     model_dir=trained_models_dir ,
+#     model_save_freq=cfg.eval.eval_interval,
+#     data_for_logging= run if cfg.log.wandb else None,
+#     # data_th=data_for_set_th,
+# )
+
+flow.plot_log_prob_comparison(
+    flow, 
+    buffer, 
+    buffer_val,
+    flow.device, 
+    save_path=f"figs/logp_graph/socialforce_10/logp_comparison.png"
 )
 
 

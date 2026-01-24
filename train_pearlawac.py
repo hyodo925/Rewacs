@@ -222,11 +222,13 @@ for i in range(cfg.train.num_tasks):
         human_num=human_nums[i],
         scenario="square_crossing",
         k=cfg.train.preliminary_exp_n,
+        policy=cfg.humans.policy,
         # k=100,
         render=False,
     )
     tasks.append(buffer)
 
+    
 trainer = PEARLAWAC(
     model=model,
     tasks=tasks,
@@ -248,7 +250,6 @@ loss_list = []
 #     render=False,
 #     print_results=True
 # )
-
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
@@ -259,6 +260,9 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 expl_logs = expl.exploration_k_ep(
                     buffer=buffer,
                     model=model,
+                    scenario=cfg.sim.train_scenario,
+                    human_num=cfg.sim.human_num,
+                    policy=cfg.humans.policy,
                     pbar=pbar,
                     render=False,
                 )
@@ -290,11 +294,13 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             val_logs = eval_policy(
                 eval_env=env,
                 model=model,
-                trainer=trainer,
                 transfunc=transfunc,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.policy,
                 convert_action=convert_action,
                 eval_episodes=env.case_size["val"],
-                scenario="val",
+                phase="val",
                 render=cfg.eval.val_render,
                 print_results=True,
             )
@@ -349,11 +355,10 @@ print(f"The best model number is {best_step_num}")
 test_logs = eval_policy(
     eval_env=env,
     model=model,
-    trainer=trainer,
     transfunc=transfunc,
     convert_action=convert_action,
     eval_episodes=env.case_size["test"],
-    scenario="test",
+    phase="test",
     render=render,
     render_type=render_type,
     path=path_v,

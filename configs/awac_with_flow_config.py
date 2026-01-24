@@ -24,16 +24,16 @@ class Simulation:
     val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
     finetune_scenario = "circle_crossing"
-    # train_val_scenario = "square_crossing"
+    # train_scenario = "square_crossing"
     # test_scenario = "square_crossing"
 
-    # rain_val_scenario = "corridor"
+    # train_scenario = "corridor"
     # test_scenario = "corridor"
 
-    # train_val_scenario = "monotonic"
+    # train_scenario = "monotonic"
     # test_scenario = "monotonic"
 
-    # train_val_scenario = "alone"
+    # train_scenario = "alone"
     # test_scenario = "alone"
 
     square_width = 10
@@ -47,6 +47,8 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "socialforce"
+    finetune_policy = "socialforce"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -77,6 +79,11 @@ class Model:
     actor_integrator_enc_hdims = [64]
     critic_integrator_enc_hdims = [64]
 
+    h_dim = 32
+    n_flow_blocks = 10
+    n_flow_hidden_num = 3
+    threshold_type = "mean"
+
 
 class Transfunc:
     with_peds_vel = True
@@ -86,8 +93,8 @@ class Transfunc:
 
 class Train:
     random_seed = 17
-    offline_learning = True
-    lr = 3e-4
+    offline_learning = False
+    lr = 1e-4
     preliminary_exp_n = 200
     total_it = 10000
     finetune_total_it = 100
@@ -96,21 +103,25 @@ class Train:
     actor_update_interval = 2
     target_update_interval = 1
     polyak = 0.995
-    human_nums = [6,7,8,9,10]
-    num_tasks = len(human_nums)
-    training_alg = "MAML_AWAC"
+    training_alg = "AWAC"
+
+    onpolicy_finetuning = False
+    fintuning_rollout_itr = 5
+    finetune_mode = "learning_based_only" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
+
 
 
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    val_render = False
+    finetune_eval_interval = 1
+    val_render = True
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:
-    wandb_project = "MAML_AWAC_training"
+    wandb_project = "AWAC_fine_tuning"
     # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True

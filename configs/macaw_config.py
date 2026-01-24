@@ -20,8 +20,10 @@ class Reward:
 
 
 class Simulation:
-    train_val_scenario = "square_crossing"
+    train_scenario = "square_crossing"
+    val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
+    finetune_scenario = "circle_crossing"
     # train_val_scenario = "square_crossing"
     # test_scenario = "square_crossing"
 
@@ -34,7 +36,7 @@ class Simulation:
     # train_val_scenario = "alone"
     # test_scenario = "alone"
 
-    square_width = 20
+    square_width = 10
     circle_radius = 4
     human_num = 5
     nonstop_human = False
@@ -45,6 +47,7 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "orca"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -75,7 +78,7 @@ class Model:
     actor_integrator_enc_hdims = [64]
     critic_integrator_enc_hdims = [64]
 
-    use_adv_head = False
+    use_adv_head = True
 
 
 class Transfunc:
@@ -105,12 +108,12 @@ class Evaluation:
     final_eval_num = 500
     val_render = False
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:
     wandb_project = "MACAW_training"
-    # wandb_mode = "offline"
+    wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True
     save_model = True

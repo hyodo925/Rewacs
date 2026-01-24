@@ -132,6 +132,19 @@ if cfg.log.wandb:
 
 seed_all(cfg.train.random_seed)
 
+if cfg.log.wandb:
+    log_dir = run.dir # WandBを使っている場合はそのディレクトリ内
+else:
+    log_dir = f"logs/awac/{start_time_log}"
+
+os.makedirs(log_dir, exist_ok=True)
+
+# 訓練ログ用CSV
+train_log_csv = os.path.join(log_dir, "train_log.csv")
+with open(train_log_csv, 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(["step", "critic_loss", "actor_loss"])
+
 ##################################################################################
 # load env
 env, robot = define_env(debug=True, config=config)
@@ -213,8 +226,11 @@ trainer = AWAC(
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     k=cfg.train.preliminary_exp_n,
+    scenario=cfg.sim.train_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.policy,
     # k=100,
-    render=False,
+    render=False
 )
 
 
@@ -258,10 +274,15 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                         step=i + 1,
                     )
 
-        trainer.update(
+        lc, la = trainer.update(
             update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
+
+        val_la = la if la is not None else ""
+        with open(train_log_csv, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([i + 1, lc, val_la])
 
         # total_it += 1
         if ((i + 1) % cfg.train.target_update_interval) == 0:
@@ -272,9 +293,12 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 eval_env=env,
                 model=model,
                 transfunc=transfunc,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.test_policy,
                 convert_action=convert_action,
                 eval_episodes=env.case_size["val"],
-                scenario="val",
+                phase="val",
                 render=cfg.eval.val_render,
                 print_results=True,
             )
@@ -330,9 +354,12 @@ test_logs = eval_policy(
     eval_env=env,
     model=model,
     transfunc=transfunc,
+    scenario=cfg.sim.test_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.test_policy,
     convert_action=convert_action,
     eval_episodes=env.case_size["test"],
-    scenario="test",
+    phase="test",
     render=render,
     render_type=render_type,
     path=path_v,
@@ -342,7 +369,6 @@ test_logs = eval_policy(
 
 if cfg.log.wandb:
     # run.log({"Validation Table": val_table})
-
     test_log_columns = ["bset_step_num"] + results_log_columns
     test_log_data = [best_step_num] + list(test_logs)
     test_table = wandb.Table(columns=test_log_columns)

@@ -106,7 +106,7 @@ def grevnet_training(
                     validation,
                     switching_score,
                     model.device, 
-                    save_path=f"figs/logp_graph/logp_comparison_{m+1}.png"
+                    save_path=f"figs/logp_graph/mean_2/logp_comparison_{m+1}.png"
                 )
                 
                 model.save_model(model_dir + f"/model_{m + 1}.pth")

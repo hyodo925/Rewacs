@@ -94,14 +94,18 @@ class SocialActorMACAW(nn.Module):
             x = data
 
         x = self.net(x)
-
-        mean = torch.tanh(self.mean_linear(x)) * self.act_max
+        mean = self.mean_linear(x)
+        # mean = torch.tanh(self.mean_linear(x)) * self.act_max
         log_std = torch.sigmoid(self.log_std_logits(x))
         log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
         std = log_std.exp()
 
         dist = Normal(mean, std)
         logp = dist.log_prob(action).sum(-1, keepdim=True)
+        logp -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+            axis=1, keepdim=True
+        )
+        logp = torch.clamp(logp, min=-100.0)
 
         if self.use_adv_head:
             adv = self.adv_head(torch.cat([x, action], dim=-1))
@@ -112,12 +116,16 @@ class SocialActorMACAW(nn.Module):
     def sample(self, data):
         mean, log_std = self.forward(data)
         std = log_std.exp()
-        mean = torch.tanh(mean) * self.act_max
+        # mean = torch.tanh(mean) * self.act_max
         dist = Normal(mean, std)
         action = dist.rsample()
         log_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        log_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+            axis=1, keepdim=True
+        )
+        log_prob = torch.clamp(log_prob, min=-100.0)
         # action = torch.clamp(action, self.act_min, self.act_max)
-        # action = torch.tanh(action) * self.act_max
+        action = torch.tanh(action) * self.act_max
         # mean = torch.clamp(mean, self.act_min, self.act_max)
         return action, log_prob, mean
     
