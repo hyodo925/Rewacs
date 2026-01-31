@@ -21,17 +21,17 @@ from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
 from meta_rl_navigation import MetaRLNavigation
-from algo.pearl_awac.eval import eval_policy
-from utils.explorer import ExplorerCrowdSim
-from algo.pearl_awac.critic import (
+from algo.meta_critic.eval import eval_policy
+from algo.meta_critic.explorer import ExplorerCrowdSim
+from utils.models import (
     SocialCritic,
 )
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.pearl_awac.trainer import PEARLAWAC
-from algo.pearl_awac.context_encoder import ContextGraphEncoder
-from algo.pearl_awac.actor import SocialActorPEARLAWAC
+from algo.meta_critic.actor import SocialActorMetaCriticAWAC
+from algo.meta_critic.trainer_hotplug import MetaCriticSAC
+from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:
     import wandb
@@ -77,18 +77,10 @@ def define_env(
 
 
 start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-if torch.backends.mps.is_available():
-    device = torch.device("mps")
-    print("Using MPS")
-elif torch.cuda.is_available():
-    device = torch.device("cuda")
-    print("Using CUDA")
-else:
-    device = torch.device("cpu")
-    print("Using CPU")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/pearl_awac_config.py"
+config_path = "./configs/meta_critic_awac_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -103,8 +95,8 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_pearl_awac_training",
-        dir=f"wandb/pearl_awac_training",
+        name=f"{start_time_log}_meta_critic_sac_training",
+        dir=f"wandb/meta_critic_sac_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -158,8 +150,8 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorPEARLAWAC(
-    cfg.model.projection_dim + cfg.model.latent_dim,
+actor = SocialActorMetaCriticAWAC(
+    cfg.model.projection_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
     h_dims=cfg.model.actor_h_dims,
@@ -174,22 +166,24 @@ critic_integrator = EmbeddedGaussianIntegrator(
 )
 
 critic = SocialCritic(
-    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.latent_dim,
+    cfg.model.projection_dim + cfg.model.action_dim,
     1,
     h_dims=cfg.model.critic_h_dims,
     integrator=critic_integrator,
     single=False,
 )
 
-context_encoder = ContextGraphEncoder(    
-    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.reward_dim,
-    2 *cfg.model.latent_dim,
+# meta_critic = MetaCriticNet(cfg.model.meta_critic_integrator_enc_hdims)
+meta_critic = MetaCriticGraphNet(    
+    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.other_output_dim,
+    1,
     h_dims=cfg.model.critic_h_dims,
     integrator=critic_integrator,
     single=False,)
+model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 
-model = MetaRLNavigation(actor=actor, critic=critic, context_encoder=context_encoder)
-
+# updater = VirtualActorUpdater()
+# updater = Hot_Plug()
 expl = ExplorerCrowdSim(
     env=env,
     # num_samples=5000,
@@ -206,50 +200,55 @@ expl = ExplorerCrowdSim(
 use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
+buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
-context_optimizer = torch.optim.Adam(model.context_encoder.parameters(), lr=cfg.train.lr)
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
+meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
 
+# trainer = MetaCriticAWAC(
+#     model=model,
+#     replay_buffer=buffer,
+#     replay_buffer_val=buffer_val,
+#     actor_optimizer=actor_optimizer,
+#     critic_optimizer=critic_optimizer,
+#     meta_critic_optimizer=meta_optimizer,
+#     batch_size=cfg.train.batch_size,
+# )
 
-
-tasks = []
-human_nums = cfg.train.human_nums
-for i in range(cfg.train.num_tasks):
-    buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        human_num=human_nums[i],
-        scenario="square_crossing",
-        k=cfg.train.preliminary_exp_n,
-        policy=cfg.humans.policy,
-        # k=100,
-        render=False,
-    )
-    tasks.append(buffer)
-
-    
-trainer = PEARLAWAC(
+trainer = MetaCriticSAC(
     model=model,
-    tasks=tasks,
+    replay_buffer=buffer,
+    # replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
-    context_optimizer=context_optimizer,
+    meta_critic_optimizer=meta_optimizer,
     batch_size=cfg.train.batch_size,
-    latent_dim=cfg.model.latent_dim
 )
+
+# expl_logs = expl.exploration_k_ep_orca(
+#     buffer=buffer,
+#     k=cfg.train.preliminary_exp_n,
+#     scenario=cfg.sim.train_scenario,
+#     human_num=cfg.sim.human_num,
+#     policy=cfg.humans.policy,
+#     # k=100,
+#     render=False,
+# )
+
+# expl_logs_val = expl.exploration_k_ep_orca(
+#     buffer=buffer_val,
+#     k=cfg.train.preliminary_exp_n,
+#     scenario=cfg.sim.val_scenario,
+#     human_num=cfg.sim.human_num,
+#     policy=cfg.humans.policy,
+#     # k=100,
+#     render=False,
+# )
 
 loss_list = []
 
-# val_logs = eval_policy(
-#     eval_env=env,
-#     model=model,
-#     transfunc=transfunc,
-#     eval_episodes=env.case_size["test"],
-#     scenario="test",
-#     render=False,
-#     print_results=True
-# )
+
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
@@ -282,7 +281,6 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
-            # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
@@ -294,9 +292,8 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             val_logs = eval_policy(
                 eval_env=env,
                 model=model,
-                trainer=trainer,
                 transfunc=transfunc,
-                scenario=cfg.sim.val_scenario,
+                scenario=cfg.sim.test_scenario,
                 human_num=cfg.sim.human_num,
                 policy=cfg.humans.policy,
                 convert_action=convert_action,
@@ -356,9 +353,8 @@ print(f"The best model number is {best_step_num}")
 test_logs = eval_policy(
     eval_env=env,
     model=model,
-    trainer=trainer,
     transfunc=transfunc,
-    scenario=cfg.sim.val_scenario,
+    scenario=cfg.sim.test_scenario,
     human_num=cfg.sim.human_num,
     policy=cfg.humans.policy,
     convert_action=convert_action,

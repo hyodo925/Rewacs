@@ -8,7 +8,8 @@ import json
 import os
 import random
 import shutil
-
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -80,7 +81,7 @@ start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/meta_critic_awac_config.py"
+config_path = "./configs/meta_critic_awac_with_flow_config2.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -95,8 +96,8 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_meta_critic_awac_finetuning",
-        dir=f"wandb/meta_critic_awac_finetuning",
+        name=f"{start_time_log}_meta_critic_awac_finetuning2_seed_{str(cfg.train.random_seed)}",
+        dir=f"wandb/meta_critic_awac_finetuning2/seed{str(cfg.train.random_seed)}",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -127,13 +128,16 @@ seed_all(cfg.train.random_seed)
 
 #################################
 # Settings
-run_dir = "wandb/meta_critic_awac_training/wandb/run-20260122_134225-chfd9otf"
-
-model_path = os.path.join(run_dir, "files/trained_models/model_10000.pth")
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260122_134225-chfd9otf"
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260124_150338-fmaruvat" #penaltimate normalization
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260125_181949-4vs04hcf" #square-square
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260126_152818-39r7avq4" #square-circle
+run_dir = "wandb/meta_critic_awac_training/wandb/run-20260127_025135-39cxeln9" #latest
+model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
 ############# flow model ####################
 # Settings
-flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260113_141037-kzovrg3f"
+flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260121_142518-hifx4rkp"
 
 flow_config_path = os.path.join(flow_run_dir, "files/config.py")
 
@@ -141,14 +145,6 @@ flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth
 
 render = False
 render_type = "video"
-
-flow_spec = importlib.util.spec_from_file_location("config", flow_config_path)
-
-flow_config = importlib.util.module_from_spec(flow_spec)
-flow_spec.loader.exec_module(flow_config)
-
-flow_cfg = flow_config.cfg
-
 
 ##################################################################################
 # load env
@@ -228,41 +224,57 @@ buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
-
-model.load_model(model_path)
+checkpoint = torch.load(model_path, map_location=device)
+model.load_state_dict(checkpoint, strict=False)
 model.to(device)
+
+######### flow ########
+flow = GraphSituationFlow(
+    obs_dim=cfg.model.obs_dim,
+    h_dim=cfg.model.h_dim,
+    n_flow_blocks=cfg.model.n_flow_blocks,
+    n_flow_hidden_num=cfg.model.n_flow_hidden_num,
+    threshold_type=cfg.model.threshold_type,
+)
+flow.load_model(flow_model_path)
+flow.to(device)
 
 trainer = MetaCriticAWAC(
     model=model,
+    flow=flow,
     replay_buffer=buffer,
-    replay_buffer_val=buffer_val,
+    # replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
     meta_critic_optimizer=meta_optimizer,
     batch_size=cfg.train.batch_size,
 )
 
-######### flow ########
-flow = GraphSituationFlow(
-    obs_dim=cfg.model.obs_dim,
-    h_dim=flow_cfg.model.h_dim,
-    n_flow_blocks=flow_cfg.model.n_flow_blocks,
-    n_flow_hidden_num=flow_cfg.model.n_flow_hidden_num,
-    threshold_type=flow_cfg.model.threshold_type,
-)
-flow.load_model(flow_model_path)
-flow.to(device)
 
-if not cfg.train.onpolicy_finetuning:
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        k=cfg.train.preliminary_exp_n,
-        scenario=cfg.sim.train_scenario,
-        human_num=cfg.sim.human_num,
-        policy=cfg.humans.policy,
-        # k=100,
-        render=False,
-    )
+# if not cfg.train.onpolicy_finetuning:
+#     expl_logs = expl.exploration_k_ep_orca(
+#         buffer=buffer,
+#         k=cfg.train.preliminary_exp_n,
+#         scenario=cfg.sim.train_scenario,
+#         human_num=cfg.sim.human_num,
+#         policy=cfg.humans.policy,
+#         # k=100,
+#         render=False,
+#     )
+if cfg.train.pre_explor:
+    with tqdm(range(cfg.train.pre_explor_itr)) as pbar:
+        for i in enumerate(pbar):
+            expl_logs = expl.exploration_k_ep_with_flow(
+                buffer=buffer,
+                model=model,
+                flow=flow,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.finetune_policy,
+                # mode=cfg.train.finetune_mode,
+                pbar=pbar,
+                render=False,
+            )
 
 loss_list = []
 val_logs = eval_policy(
@@ -278,7 +290,7 @@ val_logs = eval_policy(
     render=cfg.eval.val_render,
     render_type=cfg.eval.render_type,
     print_results=True,
-    path="trajs/"
+    path=f"trajs/meta_critic_awac_finetuning/seed{str(cfg.train.random_seed)}/human{str(cfg.sim.human_num)}/{cfg.train.finetune_mode}/itr0/",
 )
 if cfg.log.wandb:
     wandb.log(
@@ -313,6 +325,7 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
                         human_num=cfg.sim.human_num,
                         policy=cfg.humans.finetune_policy,
                         pbar=pbar,
+                        # mode=cfg.train.finetune_mode,
                         render=False,
                     )
 
@@ -352,7 +365,7 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
                 render=cfg.eval.val_render,
                 render_type=cfg.eval.render_type,
                 print_results=True,
-                path="trajs/"
+                path=f"trajs/meta_critic_awac_finetuning/seed{str(cfg.train.random_seed)}/human{str(cfg.sim.human_num)}/{cfg.train.finetune_mode}/itr{str(i+1)}/",
             )
             if cfg.log.wandb:
                 wandb.log(
@@ -370,63 +383,9 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
 
                 val_log_data = [i + 1] + list(val_logs)
                 val_table.add_data(*val_log_data)
-                if i + 1 == cfg.train.total_it:
+                if i + 1 == cfg.train.finetune_total_it:
                     run.log({"Validation Table": val_table})
-
-            # update_best = val_logs[1] > max_cdr
-            # if update_best:
-            #     best_model = copy.deepcopy(model.state_dict())
-            #     best_step_num = i + 1
-            #     max_cdr = val_logs[1]
-
-            # if cfg.log.save_model:
-            #     model.save_model(trained_models_dir + "/model_{}.pth".format(i + 1))
-            #     if update_best:
-            #         model.save_model(trained_models_dir + "/model_best.pth")
-
-
-# model.to(device)
-# fig, ax = plt.subplots(figsize=(7, 7))
-# eval_orca_policy(eval_env=env, psr=psr, transfunc=transfunc, eval_episodes=500)
-# render = cfg.eval.render
-# render_type = cfg.eval.render_type
-# if render and (render_type == "video"):
-#     if cfg.log.wandb:
-#         path_v = os.path.join(run.dir, "videos/training_results")
-#         os.makedirs(path_v, exist_ok=True)
-#     else:
-#         path_v = "videos/{}_{}_{}".format(start_time_log, trainer.alg_name, "CrowdSim")
-#         os.mkdir(path_v)
-# else:
-#     path_v = None
-
-# model.load_state_dict(best_model)
-# print(f"The best model number is {best_step_num}")
-
-# test_logs = eval_policy(
-#     eval_env=env,
-#     model=model,
-#     transfunc=transfunc,
-#     scenario=cfg.sim.val_scenario,
-#     human_num=cfg.sim.human_num,
-#     policy=cfg.humans.policy,
-#     convert_action=convert_action,
-#     eval_episodes=env.case_size["test"],
-#     phase="test",
-#     render=render,
-#     render_type=render_type,
-#     path=path_v,
-#     print_results=True,
-# )
 
 
 if cfg.log.wandb:
-    # run.log({"Validation Table": val_table})
-
-    # test_log_columns = ["bset_step_num"] + results_log_columns
-    # test_log_data = [best_step_num] + list(test_logs)
-    # test_table = wandb.Table(columns=test_log_columns)
-    # test_table.add_data(*test_log_data)
-
-    # run.log({"Test Table": test_table})
     wandb.finish()

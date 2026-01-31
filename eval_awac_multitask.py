@@ -29,7 +29,7 @@ from utils.models import (
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.awac.trainer import AWAC
+from algo.awac.trainer import AWACMultiTask
 from algo.awac.actor import SocialActorAWAC
 try:
     import wandb
@@ -76,14 +76,9 @@ def define_env(
 
 #################################
 # Settings
-run_dir = "wandb/awac_training/wandb/run-20260113_130327-zgc57h94"
-run_dir = "wandb/awac_training/wandb/run-20260127_054147-ayzag4yg" #6humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_054715-o7qgqkmn" #7humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_055100-e33rk7ud" #8humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_055427-agw3x8if" #9humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_055759-s33365br" #10humans square
+run_dir = "wandb/awac_multitask_training/wandb/run-20260127_084757-0t5iqip0"
 
-config_path = os.path.join("configs/awac_config.py")
+config_path = os.path.join("configs/awac_multitask_config.py")
 
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
@@ -164,15 +159,17 @@ buffer.extend(range(5000))
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 
-trainer = AWAC(
+model.load_model(model_path)
+model.to(device)
+
+trainer = AWACMultiTask(
     model=model,
-    replay_buffer=buffer,
+    tasks=None,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
     batch_size=cfg.train.batch_size,
 )
 
-model.load_model(model_path)
 
 loss_list = []
 
@@ -193,18 +190,21 @@ if render and (render_type == "video"):
 
 elif render and (render_type == "traj"):
     path_v = os.path.join(
-       f"trajs/eval_awac/{cfg.sim.val_scenario}/{cfg.humans.test_policy}/{cfg.sim.human_num}/{cfg.train.random_seed}"
+       f"trajs/eval_awac_multitask/{cfg.sim.val_scenario}/{cfg.humans.test_policy}/{cfg.sim.human_num}/{cfg.train.random_seed}"
     )
     os.makedirs(path_v, exist_ok=True)
 
 else:
     path_v = None
 
-output_path = f"results/eval_awac/{cfg.sim.val_scenario}_{cfg.humans.test_policy}_{cfg.sim.human_num}_{cfg.train.random_seed}"
+output_path = f"results/eval_awac_multitask/{cfg.sim.val_scenario}_{cfg.humans.test_policy}_{cfg.sim.human_num}_{cfg.train.random_seed}"
 
 eval_policy(
     eval_env=env,
     model=model,
+    scenario=cfg.sim.val_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.policy,
     transfunc=transfunc,
     convert_action=convert_action,
     eval_episodes=env.case_size["test"],

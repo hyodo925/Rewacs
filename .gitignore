@@ -11,10 +11,14 @@ wheels/
 !/logs/.gitkeep
 /videos/*
 !/videos/.gitkeep
+/results/*
+!/results/.gitkeep
 /figs/*
 !/figs/.gitkeep
 /trajs/*
 !/trajs/.gitkeep
+/analysis_results/*
+!/analysis_results/.gitkeep
 /trained_models/*
 !/trained_models/.gitkeep
 /wandb/*

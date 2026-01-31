@@ -6,6 +6,8 @@ import torch.nn.functional as F
 from tqdm import tqdm
 from .virtual_updater import VirtualActorUpdater
 import higher
+from torchviz import make_dot
+
 
 def get_grad_norms(model, prefix):
     metrics = {}
@@ -28,6 +30,7 @@ class MetaCriticAWAC:
         critic_optimizer,
         meta_critic_optimizer,
         batch_size,
+        flow=None,
         lr=3e-4,
         polyak=0.995,
         gamma=0.9,
@@ -35,6 +38,7 @@ class MetaCriticAWAC:
     ):
         self.alg_name = "MetaCriticAWAC"
         self.model = model
+        self.flow = flow
         self.target = copy.deepcopy(model)
         self.replay_buffer = replay_buffer
         self.replay_buffer_val = replay_buffer_val
@@ -50,17 +54,238 @@ class MetaCriticAWAC:
         self.beta = torch.as_tensor([beta]).to(self.device)
 
         self.updater = VirtualActorUpdater()
+        self.anomaly_weight = 1.0
+        self.normality_weight = 0.5
+        self.handmade_weights = False
 
     def safe_exp(self, x):
         return torch.where(x < 50, torch.exp(x), x)
 
     def update(self, data_for_logging=None):
+        # torch.autograd.set_detect_anomaly(True)
         grad_metrics = {}
         sample = self.replay_buffer.sample(self.batch_size)
         obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
 
-        sample_val = self.replay_buffer_val.sample(self.batch_size)
-        # sample_val = self.replay_buffer.sample(self.batch_size)
+        # sample_val = self.replay_buffer_val.sample(self.batch_size)
+        sample_val = self.replay_buffer.sample(self.batch_size)
+        obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample_val.values())
+
+        with torch.no_grad():
+            next_act_target, next_log_prob, *_ = self.model.actor.sample(
+                (
+                    next_obs.to(self.device),
+                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                )
+            )
+            Q_target_1, Q_target_2 = self.target.critic(
+                (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
+            )
+            Q_target_min = torch.min(torch.cat((Q_target_1, Q_target_2), 1), dim=1)[
+                0
+            ].unsqueeze(-1)
+
+            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
+                self.device
+            )
+
+        Q1, Q2 = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act.squeeze().to(self.device),
+        )
+
+        loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
+        params = dict(self.model.critic.named_parameters())
+        dot = make_dot(loss_critic, params=params)
+        dot.render("meta_critic_awac_critic_graph", format="png")
+
+        self.critic_optimizer.zero_grad()
+        loss_critic.backward()
+        self.critic_optimizer.step()
+        lc = loss_critic.data.item()
+
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
+            data_for_logging[0].log(
+                {
+                    "loss/critic": lc,
+                },
+                step=data_for_logging[1],
+            )
+        ###############################
+        ### compute actor loss      ###
+        ###############################
+        action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
+        with torch.no_grad():
+            qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+            v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
+            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+            weights = self.safe_exp(adv / self.beta)
+        get_log_prob = self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)
+        loss_act = -(get_log_prob* weights).mean()
+
+        ###############################
+        ### compute loss aux        ###
+        ############################### 
+        loss_auxiliary = self.model.meta_critic(
+            (
+                obs.reshape(self.batch_size, -1).to(self.device),
+                r_obs.reshape(self.batch_size, -1).to(self.device),
+            ),
+            act.squeeze().to(self.device),
+            other_output.reshape(self.batch_size, -1).to(self.device),
+        )
+
+
+        # params = dict(self.model.meta_critic.named_parameters())
+        # dot = make_dot(loss_meta, params=params)
+        # dot.render("meta_critic_awac_meta_critic_graph1", format="png")
+        ################################################
+        ### first pseudo update with loss act        ###
+        ################################################
+
+        grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        # grads_critic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_critic]
+        self.updater.step(self.model.actor, grads_critic, "phi_old", 1e-3)
+        old_param = self.updater.get("phi_old")
+        qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+        pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param,)
+        with torch.no_grad():
+            v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val)
+            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+            # adv = qw_ref - qw_gen
+            # adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+            # adv = torch.clamp(adv, min=0.0) # AWACは非負の重みを期待
+            weights = self.safe_exp(adv / self.beta)
+        get_log_prob_old = self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),act_val.squeeze().to(self.device),params=old_param)
+        policy_loss_val = -(get_log_prob_old* weights).mean()
+
+        # abs_theta = 0.0
+        # for p in self.param_optim_theta:
+        #     if p.grad is not None:
+        #         penalty = l1_penalty(p.grad)
+        #         if torch.isnan(penalty).any():
+        #             print("Warning: NaN in L1 penalty")
+        #         abs_theta += penalty.item()
+
+        ################################################
+        ### second pseudo update with loss aux       ###
+        ################################################
+        # print(f"DEBUG: loss_auxiliary grad_fn: {loss_auxiliary.grad_fn}") # ここがNoneならMeta-Critic自体が不正
+        grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        # print(f"DEBUG: grads_mcritic[0] grad_fn: {grads_mcritic[0].grad_fn}") # ここがNoneならcreate_graphが効いていない
+        # grads_mcritic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_mcritic]
+        self.updater.step(self.model.actor, grads_mcritic, "phi_new", 1e-3, from_params=old_param)
+        new_param = self.updater.get("phi_new")
+        first_key = list(new_param.keys())[0]
+        first_p = new_param[first_key]
+
+        # print(f"DEBUG: first_key: {first_key}")
+        # print(f"DEBUG: new_param[{first_key}] grad_fn: {first_p.grad_fn}")
+
+        # # もし grad_fn が None なら、ここで鎖が切れています
+        # if first_p.grad_fn is None:
+        #     print("!!! 警告: updater の中で計算グラフが切断されています !!!")
+        
+        pi_val_new, log_pi_val_new, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        # print(f"DEBUG: log_pi_val_new grad_fn: {log_pi_val_new.grad_fn}")
+        with torch.no_grad(): 
+            v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val_new)
+            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+            # adv = qw_ref - qw_gen
+            # adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+            # adv = torch.clamp(adv, min=0.0) # AWACは非負の重みを期待
+            weights = self.safe_exp(adv / self.beta)
+        get_log_prob_new = self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),act_val.squeeze().to(self.device),params=new_param)
+        policy_loss_val_new = -(get_log_prob_new* weights).mean()
+        # print(f"DEBUG: policy_loss_val_new grad_fn: {policy_loss_val_new.grad_fn}")
+        ###############################
+        ### compute loss meta       ###
+        ###############################
+        utility = policy_loss_val - policy_loss_val_new
+        utility = torch.tanh(utility)
+        # utility = utility / (1 + torch.abs(utility)) 
+        loss_meta = -utility
+        params = dict(self.model.meta_critic.named_parameters())
+        dot = make_dot(loss_meta, params=params)
+        dot.render("meta_critic_awac_meta_critic_graph2", format="png")
+        self.meta_critic_optimizer.zero_grad()
+
+        loss_meta.backward(retain_graph=True)
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
+        # for name, param in self.model.meta_critic.named_parameters():
+        #     if param.grad is not None:
+        #         # 勾配の平均絶対値やノルムを表示
+        #         print(f"{name} | grad mean: {param.grad.abs().mean().item():.6f} | max: {param.grad.max().item():.6f}")
+        #     else:
+        #         print(f"{name} | grad is None (勾配が届いていません！)")
+        
+   
+        # action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshapeself.batch_size, 1, -1).to(self.device)))
+        # with torch.no_grad():
+        #     qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+        #     v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
+        #     qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+        #     adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+        #     weights = self.safe_exp(adv / self.beta)
+
+        # loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
+
+        # loss_auxiliary = self.model.meta_critic((obs.reshape(self.batch_size, -1).to(self.device),r_obs.reshape(self.batch_size, -1).to(self.device),),act.squeeze().to(self.device),other_output.reshape(self.batch_size, -1).to(self.device),)(
+        # loss_act = loss_act + loss_auxiliary
+        self.actor_optimizer.zero_grad()
+        params = dict(self.model.actor.named_parameters())
+        dot = make_dot(loss_act+loss_auxiliary, params=params)
+        dot.render("meta_critic_awac_actor_graph", format="png")
+        loss_auxiliary.backward(retain_graph=True)
+        loss_act.backward()
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+        # for name, param in self.model.actor.named_parameters():
+        #     if param.grad is not None:
+        #         # 勾配の平均絶対値やノルムを表示
+        #         print(f"{name} | grad mean: {param.grad.abs().mean().item():.6f} | max: {param.grad.max().item():.6f}")
+        #     else:
+        #         print(f"{name} | grad is None (勾配が届いていません！)")
+        self.meta_critic_optimizer.step()
+        lm = loss_meta.data.item()
+        self.actor_optimizer.step()
+        la = loss_act.data.item()
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+                    "log_prob/actor": get_log_prob.mean().data.item(),
+                    "log_prob/actor_old": get_log_prob_old.mean().data.item(),
+                    "log_prob/actor_new": get_log_prob_new.mean().data.item(),
+
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
+    
+
+    def update_target(self, ):
+        for param, target_param in zip(
+            self.model.parameters(), self.target.parameters()
+        ):
+            target_param.data.mul_(self.polyak)
+            target_param.data.add_((1 - self.polyak) * param.data)
+
+    def finetune(self, data_for_logging=None):
+        # torch.autograd.set_detect_anomaly(True)
+        grad_metrics = {}
+        sample = self.replay_buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+
+        # sample_val = self.replay_buffer_val.sample(self.batch_size)
+        sample_val = self.replay_buffer.sample(self.batch_size)
         obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample_val.values())
 
         with torch.no_grad():
@@ -100,9 +325,7 @@ class MetaCriticAWAC:
                 },
                 step=data_for_logging[1],
             )
-        ###############################
-        ### compute actor loss      ###
-        ###############################
+
         action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
         with torch.no_grad():
             qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
@@ -110,27 +333,37 @@ class MetaCriticAWAC:
             qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
             adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
             weights = self.safe_exp(adv / self.beta)
+        get_log_prob = self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)
+        
+        # sample_weights = torch.where(switches.to(self.device) > 0.5, 1.0, 0.5)
 
-        loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
+        # if self.flow is not None:
+        #     switching_score = self.flow.get_switching_score(obs.to(self.flow.device))
+        #     # print(switching_score)
+        #     scale = self.flow.theta * 0.1 
+        #     sample_weights = 0.5 + 0.5 * torch.sigmoid((switching_score - self.flow.theta) / scale)
+        # elif self.handmade_weights:
+        #     sample_weights = torch.where(switches.to(self.device) > 0.5, 1.0, 0.5)
+        # else:
+        #     sample_weights = 1
+        # Advantageベースの重み(weights)と、状況ベースの重み(sample_weights)を結合
+        # combined_weights = weights * sample_weights.flatten()
+        # loss_act = -(get_log_prob * combined_weights).mean()
+        
+        loss_act = -(get_log_prob* weights).mean()
 
-        ###############################
-        ### compute loss aux        ###
-        ############################### 
         loss_auxiliary = self.model.meta_critic(
             (
-                obs.reshape(self.batch_size, -1).to(self.device),
-                r_obs.reshape(self.batch_size, -1).to(self.device),
+                obs_val.reshape(self.batch_size, -1).to(self.device),
+                r_obs_val.reshape(self.batch_size, -1).to(self.device),
             ),
-            act.squeeze().to(self.device),
+            act_val.squeeze().to(self.device),
             other_output.reshape(self.batch_size, -1).to(self.device),
         )
 
-        ################################################
-        ### first pseudo update with loss act        ###
-        ################################################
-
         grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), create_graph=True, allow_unused=True)
-        self.updater.step(self.model.actor, grads_critic, "phi_old", self.lr)
+        # grads_critic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_critic]
+        self.updater.step(self.model.actor, grads_critic, "phi_old", 1e-3)
         old_param = self.updater.get("phi_old")
         qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
         pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param,)
@@ -139,124 +372,80 @@ class MetaCriticAWAC:
             qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
             adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
             weights = self.safe_exp(adv / self.beta)
+        get_log_prob_old = self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),act_val.squeeze().to(self.device),params=old_param)
+        # combined_weights = weights * sample_weights.flatten()
+        policy_loss_val = -(get_log_prob_old* weights).mean()
+        # policy_loss_val = -(get_log_prob_old* combined_weights).mean()
 
-        policy_loss_val = -(self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),pi_val.squeeze().to(self.device),params=old_param)* weights).mean()
-
-        # abs_theta = 0.0
-        # for p in self.param_optim_theta:
-        #     if p.grad is not None:
-        #         penalty = l1_penalty(p.grad)
-        #         if torch.isnan(penalty).any():
-        #             print("Warning: NaN in L1 penalty")
-        #         abs_theta += penalty.item()
-
-        ################################################
-        ### second pseudo update with loss aux       ###
-        ################################################
-        # print(f"DEBUG: loss_auxiliary grad_fn: {loss_auxiliary.grad_fn}") # ここがNoneならMeta-Critic自体が不正
         grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
         # print(f"DEBUG: grads_mcritic[0] grad_fn: {grads_mcritic[0].grad_fn}") # ここがNoneならcreate_graphが効いていない
-        self.updater.step(self.model.actor, grads_mcritic, "phi_new", self.lr, from_params=old_param)
+        # grads_mcritic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_mcritic]
+        self.updater.step(self.model.actor, grads_mcritic, "phi_new", 1e-3, from_params=old_param)
         new_param = self.updater.get("phi_new")
         first_key = list(new_param.keys())[0]
         first_p = new_param[first_key]
-
-        # print(f"DEBUG: first_key: {first_key}")
-        # print(f"DEBUG: new_param[{first_key}] grad_fn: {first_p.grad_fn}")
-
-        # # もし grad_fn が None なら、ここで鎖が切れています
-        # if first_p.grad_fn is None:
-        #     print("!!! 警告: updater の中で計算グラフが切断されています !!!")
         
         pi_val_new, log_pi_val_new, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
         # print(f"DEBUG: log_pi_val_new grad_fn: {log_pi_val_new.grad_fn}")
         with torch.no_grad(): 
             v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val_new)
-
             qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
             adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
             weights = self.safe_exp(adv / self.beta)
+        get_log_prob_new = self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),act_val.squeeze().to(self.device),params=new_param)
+        # combined_weights = weights * sample_weights.flatten()
+        policy_loss_val_new = -(get_log_prob_new* weights).mean()
+        # policy_loss_val_new = -(get_log_prob_new* combined_weights).mean()
 
-        policy_loss_val_new = -(self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device)),pi_val_new.squeeze().to(self.device),params=new_param)* weights).mean()
-        # print(f"DEBUG: policy_loss_val_new grad_fn: {policy_loss_val_new.grad_fn}")
-        ###############################
-        ### compute loss meta       ###
-        ###############################
         utility = policy_loss_val - policy_loss_val_new
         utility = torch.tanh(utility)
         # utility = utility / (1 + torch.abs(utility)) 
         loss_meta = -utility
         self.meta_critic_optimizer.zero_grad()
+
         loss_meta.backward(retain_graph=True)
         if data_for_logging is not None:
             grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
-        # for name, param in self.model.meta_critic.named_parameters():
-        #     if param.grad is not None:
-        #         # 勾配の平均絶対値やノルムを表示
-        #         print(f"{name} | grad mean: {param.grad.abs().mean().item():.6f} | max: {param.grad.max().item():.6f}")
-        #     else:
-        #         print(f"{name} | grad is None (勾配が届いていません！)")
-        
-   
-        # action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshapeself.batch_size, 1, -1).to(self.device)))
-        # with torch.no_grad():
-        #     qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
-        #     v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
-        #     qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
-        #     adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
-        #     weights = self.safe_exp(adv / self.beta)
 
-        # loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
-
-        # loss_auxiliary = self.model.meta_critic((obs.reshape(self.batch_size, -1).to(self.device),r_obs.reshape(self.batch_size, -1).to(self.device),),act.squeeze().to(self.device),other_output.reshape(self.batch_size, -1).to(self.device),)(
-        # loss_act = loss_act + loss_auxiliary
         self.actor_optimizer.zero_grad()
         loss_auxiliary.backward(retain_graph=True)
         loss_act.backward()
         if data_for_logging is not None:
             grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
-        # for name, param in self.model.actor.named_parameters():
-        #     if param.grad is not None:
-        #         # 勾配の平均絶対値やノルムを表示
-        #         print(f"{name} | grad mean: {param.grad.abs().mean().item():.6f} | max: {param.grad.max().item():.6f}")
-        #     else:
-        #         print(f"{name} | grad is None (勾配が届いていません！)")
         self.meta_critic_optimizer.step()
         lm = loss_meta.data.item()
         self.actor_optimizer.step()
         la = loss_act.data.item()
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+                    "log_prob/actor": get_log_prob.mean().data.item(),
+                    "log_prob/actor_old": get_log_prob_old.mean().data.item(),
+                    "log_prob/actor_new": get_log_prob_new.mean().data.item(),
 
-        if data_for_logging is not None:
-            log_data = {
-                "loss/critic": lc,
-                "loss/actor": la,
-                "loss/meta": lm,
-                "loss/auxiliary": loss_auxiliary.data.item(),
-            }
-            log_data.update(grad_metrics) # 勾配情報を追加
-            data_for_logging[0].log(log_data, step=data_for_logging[1])
-    
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
+       
 
-    def update_target(self, ):
-        for param, target_param in zip(
-            self.model.parameters(), self.target.parameters()
-        ):
-            target_param.data.mul_(self.polyak)
-            target_param.data.add_((1 - self.polyak) * param.data)
-
-    def finetune(self, data_for_logging=None):
+    def visualize_computational_graph(self):
         grad_metrics = {}
-        sample = self.replay_buffer.sample(self.batch_size)
-        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+        # sample = self.replay_buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(self.replay_buffer.sample(1).values())
 
-        sample_val = self.replay_buffer.sample(self.batch_size)
-        obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample_val.values())
+        # sample_val = self.replay_buffer_val.sample(self.batch_size)
+        # sample_val = self.replay_buffer.sample(self.batch_size)
+        obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(self.replay_buffer.sample(1).values())
 
         with torch.no_grad():
             next_act_target, next_log_prob, *_ = self.model.actor.sample(
                 (
                     next_obs.to(self.device),
-                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                    next_r_obs.reshape(1, 1, -1).to(self.device),
                 )
             )
             Q_target_1, Q_target_2 = self.target.critic(
@@ -272,95 +461,83 @@ class MetaCriticAWAC:
 
         Q1, Q2 = self.model.critic(
             (obs.to(self.device), r_obs.to(self.device)),
-            act.squeeze().to(self.device),
+            act.view(1,-1).to(self.device),
         )
 
         loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
-        self.critic_optimizer.zero_grad()
-        loss_critic.backward()
-        self.critic_optimizer.step()
-        lc = loss_critic.data.item()
+        # self.critic_optimizer.zero_grad()
+        # loss_critic.backward()
+        # self.critic_optimizer.step()
 
-        action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
+        action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(1, 1, -1).to(self.device)))
         with torch.no_grad():
             qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
             v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
             qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
             adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
             weights = self.safe_exp(adv / self.beta)
-
-        loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
+        get_log_prob = self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(1, 1, -1).to(self.device),),act.squeeze().to(self.device),)
+        loss_act = -(get_log_prob* weights).mean()
 
         loss_auxiliary = self.model.meta_critic(
             (
-                obs.reshape(self.batch_size, -1).to(self.device),
-                r_obs.reshape(self.batch_size, -1).to(self.device),
+                obs.reshape(1, -1).to(self.device),
+                r_obs.reshape(1, -1).to(self.device),
             ),
-            act.squeeze().to(self.device),
-            other_output.reshape(self.batch_size, -1).to(self.device),
+            act.view(1,-1).to(self.device),
+            other_output.reshape(1, -1).to(self.device),
         )
 
         grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), create_graph=True, allow_unused=True)
-        self.updater.step(self.model.actor, grads_critic, "phi_old", self.lr)
+        # grads_critic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_critic]
+        self.updater.step(self.model.actor, grads_critic, "phi_old", 1e-3)
         old_param = self.updater.get("phi_old")
         qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
-        pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param,)
+        pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(1, 1, -1).to(self.device),),params=old_param,)
         with torch.no_grad():
             v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val)
             qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
             adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
             weights = self.safe_exp(adv / self.beta)
-
-        policy_loss_val = -(self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),pi_val.squeeze().to(self.device),params=old_param)* weights).mean()
-
+        get_log_prob_old = self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(1, 1, -1).to(self.device),),act_val.view(1,-1).to(self.device),params=old_param)
+        policy_loss_val = -(get_log_prob_old* weights).mean()
 
         grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
-        self.updater.step(self.model.actor, grads_mcritic, "phi_new", self.lr, from_params=old_param)
+        self.updater.step(self.model.actor, grads_mcritic, "phi_new", 1e-3, from_params=old_param)
         new_param = self.updater.get("phi_new")
-        first_key = list(new_param.keys())[0]
-        first_p = new_param[first_key]
         
-        pi_val_new, log_pi_val_new, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        pi_val_new, log_pi_val_new, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(1, 1, -1).to(self.device),),params=new_param)
         with torch.no_grad(): 
             v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val_new)
-
             qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
             adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
             weights = self.safe_exp(adv / self.beta)
-
-        policy_loss_val_new = -(self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device)),pi_val_new.squeeze().to(self.device),params=new_param)* weights).mean()
-
+        get_log_prob_new = self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(1, 1, -1).to(self.device),),act_val.view(1,-1).to(self.device),params=new_param)
+        policy_loss_val_new = -(get_log_prob_new* weights).mean()
         utility = policy_loss_val - policy_loss_val_new
-        # utility = (utility - utility.mean()) / (utility.std() + 1e-8)
         utility = torch.tanh(utility)
-        
-        # utility = utility / (1 + torch.abs(utility)) 
         loss_meta = -utility
         self.meta_critic_optimizer.zero_grad()
-        loss_meta.backward(retain_graph=True)
 
-        self.actor_optimizer.zero_grad()
-        loss_auxiliary.backward(retain_graph=True)
-        loss_act.backward()
+        # loss_meta.backward(retain_graph=True)
+        # self.actor_optimizer.zero_grad()
+        # loss_auxiliary.backward(retain_graph=True)
+        # loss_act.backward()
 
-        self.meta_critic_optimizer.step()
-        lm = loss_meta.data.item()
-        self.actor_optimizer.step()
-        la = loss_act.data.item()
+        # self.meta_critic_optimizer.step()
+        # self.actor_optimizer.step()
+        # 可視化
+        params = dict(self.model.actor.named_parameters())
+        dot = make_dot(loss_act+loss_auxiliary, params=params)
+        dot.render("meta_critic_awac_actor_graph", format="png")
 
+        params = dict(self.model.critic.named_parameters())
+        dot = make_dot(loss_critic, params=params)
+        dot.render("meta_critic_awac_critic_graph", format="png")
 
-        if data_for_logging is not None:
-            grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
-            grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
-            grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
-            log_data = {
-                "loss/critic": lc,
-                "loss/actor": la,
-                "loss/meta": lm,
-                "loss/auxiliary": loss_auxiliary.data.item(),
-            }
-            log_data.update(grad_metrics) # 勾配情報を追加
-            data_for_logging[0].log(log_data, step=data_for_logging[1])
+        params = dict(self.model.meta_critic.named_parameters())
+        dot = make_dot(loss_meta, params=params)
+        dot.render("meta_critic_awac_meta_critic_graph", format="png")
 
 
 class Scalar(nn.Module):
@@ -376,7 +553,7 @@ class MetaCriticCalQL:
         self,
         model,
         replay_buffer,
-        replay_buffer_val,
+        # replay_buffer_val,
         action_dim,
         actor_optimizer,
         critic_optimizer,
@@ -392,7 +569,7 @@ class MetaCriticCalQL:
         self.action_dim = action_dim
         self.target = copy.deepcopy(model)
         self.replay_buffer = replay_buffer
-        self.replay_buffer_val = replay_buffer_val
+        # self.replay_buffer_val = replay_buffer_val
         self.actor_optimizer = actor_optimizer
         self.critic_optimizer = critic_optimizer
         self.meta_critic_optimizer = meta_critic_optimizer
@@ -442,7 +619,8 @@ class MetaCriticCalQL:
         sample = self.replay_buffer.sample(self.batch_size)
         obs, next_obs, r_obs, next_r_obs, act, rwd, mc_returns, done = list(sample.values())
 
-        sample_val = self.replay_buffer_val.sample(self.batch_size)
+        # sample_val = self.replay_buffer_val.sample(self.batch_size)
+        sample_val = self.replay_buffer.sample(self.batch_size)
         obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, mc_returns_val, done_val = list(sample_val.values())
 
         act_target, log_prob, _, other_output= self.model.actor.sample(
@@ -716,18 +894,23 @@ class MetaCriticCalQL:
         la = loss_act.data.item()
 
 
-        if data_for_logging is not None:
-            grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
-            grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
-            grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
-            log_data = {
-                "loss/critic": lc,
-                "loss/actor": la,
-                "loss/meta": lm,
-                "loss/auxiliary": loss_auxiliary.data.item(),
-            }
-            log_data.update(grad_metrics) # 勾配情報を追加
-            data_for_logging[0].log(log_data, step=data_for_logging[1])
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
+                grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+                grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+                    "log_prob/now": get_log_prob.mean().data.item(),
+                    "log_prob/old": log_pi_val_old.mean().data.item(),
+                    "log_prob/new": log_pi_val_new.mean().data.item(),
+
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
 
 
     def finetune(self, current_it, total_it, data_for_logging=None):
@@ -967,6 +1150,7 @@ class MetaCriticCalQL:
             self.alpha_optimizer.step()
             lalpha = alpha_loss.data.item()
 
+
         loss_auxiliary = self.model.meta_critic(
             (
                 obs.reshape(self.batch_size, -1).to(self.device),
@@ -1009,18 +1193,23 @@ class MetaCriticCalQL:
         la = loss_act.data.item()
 
 
-        if data_for_logging is not None:
-            grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
-            grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
-            grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
-            log_data = {
-                "loss/critic": lc,
-                "loss/actor": la,
-                "loss/meta": lm,
-                "loss/auxiliary": loss_auxiliary.data.item(),
-            }
-            log_data.update(grad_metrics) # 勾配情報を追加
-            data_for_logging[0].log(log_data, step=data_for_logging[1])
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
+                grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+                grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+                    "log_prob/now": get_log_prob.mean().data.item(),
+                    "log_prob/old": log_pi_val_old.mean().data.item(),
+                    "log_prob/new": log_pi_val_new.mean().data.item(),
+
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
 
 
     def update_target(self):
@@ -1030,3 +1219,716 @@ class MetaCriticCalQL:
             target_param.data.mul_(self.polyak)
             target_param.data.add_((1 - self.polyak) * param.data)
 
+
+
+class MetaCriticSAC:
+    def __init__(
+        self,
+        model,
+        replay_buffer,
+        # replay_buffer_val,
+        actor_optimizer,
+        critic_optimizer,
+        meta_critic_optimizer,
+        alpha_optimizer,
+        batch_size,
+        act_dim=2,
+        lr=3e-4,
+        polyak=0.995,
+        gamma=0.9,
+        beta=0.3,
+        alpha=1.0
+    ):
+        self.alg_name = "MetaCriticSAC"
+        self.model = model
+        self.act_dim = act_dim
+        self.target = copy.deepcopy(model)
+        self.replay_buffer = replay_buffer
+        # self.replay_buffer_val = replay_buffer_val
+        self.actor_optimizer = actor_optimizer
+        self.critic_optimizer = critic_optimizer
+        self.meta_critic_optimizer = meta_critic_optimizer
+        self.batch_size = batch_size
+        self.polyak = polyak
+
+        self.lr =lr
+        self.device = model.device
+        self.gamma = torch.as_tensor([gamma]).to(self.device)
+        self.beta = torch.as_tensor([beta]).to(self.device)
+        self.alpha = torch.as_tensor([alpha]).to(self.device)
+        self.updater = VirtualActorUpdater()
+        self.auto_entropy_tuning = False
+        target_entropy=None
+        if self.auto_entropy_tuning:
+            if target_entropy is None:
+                self.target_entropy = -torch.prod(torch.Tensor([self.act_dim]).to(self.device)).item()
+            else:
+                self.target_entropy = target_entropy
+            self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
+            self.alpha_optimizer = alpha_optimizer
+            self.alpha = self.log_alpha.exp()
+        else:
+            self.alpha = torch.tensor(self.alpha).to(self.device)
+
+    def safe_exp(self, x):
+        return torch.where(x < 50, torch.exp(x), x)
+
+    def update(self, data_for_logging=None):
+        # torch.autograd.set_detect_anomaly(True)
+        grad_metrics = {}
+        sample = self.replay_buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+
+        # sample_val = self.replay_buffer_val.sample(self.batch_size)
+        sample_val = self.replay_buffer.sample(self.batch_size)
+        obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample_val.values())
+
+        with torch.no_grad():
+            next_act_target, next_log_prob, *_ = self.model.actor.sample(
+                (
+                    next_obs.to(self.device),
+                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                )
+            )
+            Q_target_1, Q_target_2 = self.target.critic(
+                (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
+            )
+            Q_target_min = torch.min(torch.cat((Q_target_1, Q_target_2), 1), dim=1)[
+                0
+            ].unsqueeze(-1)
+
+            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
+                self.device
+            )
+
+        Q1, Q2 = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act.squeeze().to(self.device),
+        )
+
+        loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
+        self.critic_optimizer.zero_grad()
+        loss_critic.backward()
+        self.critic_optimizer.step()
+        lc = loss_critic.data.item()
+
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
+            data_for_logging[0].log(
+                {
+                    "loss/critic": lc,
+                },
+                step=data_for_logging[1],
+            )
+        ###############################
+        ### compute actor loss      ###
+        ###############################
+        action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
+        with torch.no_grad():
+            qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+            v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
+            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+            weights = self.safe_exp(adv / self.beta)
+
+        loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
+
+        ###############################
+        ### compute loss aux        ###
+        ############################### 
+        loss_auxiliary = self.model.meta_critic(
+            (
+                obs.reshape(self.batch_size, -1).to(self.device),
+                r_obs.reshape(self.batch_size, -1).to(self.device),
+            ),
+            act.squeeze().to(self.device),
+            other_output.reshape(self.batch_size, -1).to(self.device),
+        )
+
+        ################################################
+        ### first pseudo update with loss act        ###
+        ################################################
+
+        grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        grads_critic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_critic]
+        self.updater.step(self.model.actor, grads_critic, "phi_old", self.lr)
+        old_param = self.updater.get("phi_old")
+        qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+        pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param,)
+
+        Q1, Q2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)), pi_val)
+        Q_min = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].unsqueeze(-1)
+        policy_loss_val = ((self.alpha * log_pi_val) - Q_min).mean()
+
+        grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        # print(f"DEBUG: grads_mcritic[0] grad_fn: {grads_mcritic[0].grad_fn}") # ここがNoneならcreate_graphが効いていない
+        grads_mcritic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_mcritic]
+        self.updater.step(self.model.actor, grads_mcritic, "phi_new", self.lr, from_params=old_param)
+        new_param = self.updater.get("phi_new")
+
+
+        pi_val_new, log_pi_val_new, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        Q1, Q2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)), pi_val_new)
+        Q_min_new = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].unsqueeze(-1)
+        policy_loss_val_new = ((self.alpha * log_pi_val_new) - Q_min_new).mean()
+
+        utility = policy_loss_val - policy_loss_val_new
+        utility = torch.tanh(utility)
+        loss_meta = -utility
+        self.meta_critic_optimizer.zero_grad()
+
+        loss_meta.backward(retain_graph=True)
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
+
+        self.actor_optimizer.zero_grad()
+        loss_auxiliary.backward(retain_graph=True)
+        loss_act.backward()
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+
+        self.meta_critic_optimizer.step()
+        lm = loss_meta.data.item()
+        self.actor_optimizer.step()
+        la = loss_act.data.item()
+
+        if self.auto_entropy_tuning:
+            alpha_loss = -(self.log_alpha * (log_prob + self.target_entropy).detach()).mean()
+            self.alpha_optimizer.zero_grad()
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
+            self.alpha = self.log_alpha.exp()
+
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+                    "log_prob": self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)),action_gen.squeeze().to(self.device),).mean().data.item()
+
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
+    
+
+    def update_target(self, ):
+        for param, target_param in zip(
+            self.model.parameters(), self.target.parameters()
+        ):
+            target_param.data.mul_(self.polyak)
+            target_param.data.add_((1 - self.polyak) * param.data)
+
+    def finetune(self, data_for_logging=None):
+        grad_metrics = {}
+        sample = self.replay_buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+
+        sample_val = self.replay_buffer.sample(self.batch_size)
+        obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample_val.values())
+
+        with torch.no_grad():
+            next_act_target, next_log_prob, *_ = self.model.actor.sample(
+                (
+                    next_obs.to(self.device),
+                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                )
+            )
+            Q_target_1, Q_target_2 = self.target.critic(
+                (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
+            )
+            Q_target_min = torch.min(torch.cat((Q_target_1, Q_target_2), 1), dim=1)[
+                0
+            ].unsqueeze(-1)
+
+            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
+                self.device
+            )
+
+        Q1, Q2 = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act.squeeze().to(self.device),
+        )
+
+        loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
+        self.critic_optimizer.zero_grad()
+        loss_critic.backward()
+        self.critic_optimizer.step()
+        lc = loss_critic.data.item()
+
+        action_gen, log_prob, _, other_output = self.model.actor.sample((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
+        with torch.no_grad():
+            qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+            v_act1, v_act2 = self.model.critic((obs.to(self.device), r_obs.to(self.device)),act=action_gen.detach(),)
+            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+            weights = self.safe_exp(adv / self.beta)
+
+        loss_act = -(self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)* weights).mean()
+
+        loss_auxiliary = self.model.meta_critic(
+            (
+                obs.reshape(self.batch_size, -1).to(self.device),
+                r_obs.reshape(self.batch_size, -1).to(self.device),
+            ),
+            act.squeeze().to(self.device),
+            other_output.reshape(self.batch_size, -1).to(self.device),
+        )
+
+        grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        self.updater.step(self.model.actor, grads_critic, "phi_old", self.lr)
+        old_param = self.updater.get("phi_old")
+        qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+        pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param,)
+        with torch.no_grad():
+            v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val)
+            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+            weights = self.safe_exp(adv / self.beta)
+
+        policy_loss_val = -(self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),pi_val.squeeze().to(self.device),params=old_param)* weights).mean()
+
+
+        grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        self.updater.step(self.model.actor, grads_mcritic, "phi_new", self.lr, from_params=old_param)
+        new_param = self.updater.get("phi_new")
+        first_key = list(new_param.keys())[0]
+        first_p = new_param[first_key]
+        
+        pi_val_new, log_pi_val_new, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        with torch.no_grad(): 
+            v_act1, v_act2 = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act=pi_val_new)
+
+            qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape((-1, 1))
+            adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+            weights = self.safe_exp(adv / self.beta)
+
+        policy_loss_val_new = -(self.model.actor.get_log_prob_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device)),pi_val_new.squeeze().to(self.device),params=new_param)* weights).mean()
+
+        utility = policy_loss_val - policy_loss_val_new
+        # utility = (utility - utility.mean()) / (utility.std() + 1e-8)
+        utility = torch.tanh(utility)
+        
+        # utility = utility / (1 + torch.abs(utility)) 
+        loss_meta = -utility
+        self.meta_critic_optimizer.zero_grad()
+        loss_meta.backward(retain_graph=True)
+
+        self.actor_optimizer.zero_grad()
+        loss_auxiliary.backward(retain_graph=True)
+        loss_act.backward()
+
+        self.meta_critic_optimizer.step()
+        lm = loss_meta.data.item()
+        self.actor_optimizer.step()
+        la = loss_act.data.item()
+
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                grad_metrics.update(get_grad_norms(self.model.critic, "critic"))
+                grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+                grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+                    "log_prob": self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)),action_gen.squeeze().to(self.device),)
+
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
+
+
+class MetaCriticNFMaxEnt:
+    def __init__(
+        self,
+        model,
+        replay_buffer,
+        actor_optimizer,
+        critic_optimizer,
+        meta_critic_optimizer,
+        batch_size,
+        polyak=0.995,
+        gamma=0.9,
+        beta=0.3,
+    ):
+        self.alg_name = "MetaCriticNFMaxEnt"
+        self.model = model
+        self.target = copy.deepcopy(model)
+        self.replay_buffer = replay_buffer
+        self.actor_optimizer = actor_optimizer
+        self.critic_optimizer = critic_optimizer
+        self.meta_critic_optimizer = meta_critic_optimizer
+        self.batch_size = batch_size
+        self.polyak = polyak
+        self.gamma = torch.as_tensor([gamma]).to(model.device)
+        self.beta = torch.as_tensor([beta]).to(model.device)
+
+        self.device = model.device
+        self.updater = VirtualActorUpdater()
+
+
+    def safe_exp(self, x):
+        return torch.where(x < 50, torch.exp(x), x)
+
+    def update(self, update_actor=False, data_for_logging=None):
+        grad_metrics = {}
+        sample = self.replay_buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+        sample_val = self.replay_buffer.sample(self.batch_size)
+        obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample.values())
+        bs = obs.shape[0]
+        with torch.no_grad():
+            prior_sample_target = self.model.actor.prior.sample((bs,))
+            next_act_target = self.model.actor.reverse(
+                prior_sample_target,
+                (
+                    next_obs.to(self.device),
+                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                ),
+            )
+            Q_target_1, Q_target_2 = self.target.critic(
+                (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
+            )
+            Q_target_min = torch.min(torch.cat((Q_target_1, Q_target_2), 1), dim=1)[
+                0
+            ].unsqueeze(-1)
+
+            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
+                self.device
+            )
+
+        Q1, Q2 = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act.squeeze().to(self.device),
+        )
+
+        loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
+        self.critic_optimizer.zero_grad()
+        loss_critic.backward()
+        self.critic_optimizer.step()
+        lc = loss_critic.data.item()
+
+        if data_for_logging is not None:
+            data_for_logging[0].log(
+                {
+                    "loss/critic": lc,
+                },
+                step=data_for_logging[1],
+            )
+
+
+
+
+        prior_sample = self.model.actor.prior.sample((bs,))
+        act_pi = self.model.actor.reverse(
+            prior_sample,
+            (
+                obs.to(self.device),
+                r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+            ),
+        )
+
+        # act_pi = (act + torch.randn_like(act)).to(self.device)
+
+        Q1_pi, _ = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act_pi.squeeze(),
+        )
+
+        z, _, logdets = self.model.actor(
+            act_pi.squeeze().detach(),
+            (
+                obs.to(self.device),
+                r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+            ),
+        )
+        logprob = self.model.actor.prior.log_prob(z) + logdets
+
+        z_bc, _, logdets_bc = self.model.actor(
+            act.squeeze().to(self.device),
+            (
+                obs.to(self.device),
+                r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+            ),
+        )
+        logprob_bc = self.model.actor.prior.log_prob(z_bc) + logdets_bc
+
+        loss_act = (-Q1_pi + logprob).mean() + (-logprob_bc).mean()
+        loss_auxiliary = self.model.meta_critic(
+            (
+                obs.reshape(self.batch_size, -1).to(self.device),
+                r_obs.reshape(self.batch_size, -1).to(self.device),
+            ),
+            act.squeeze().to(self.device),
+            z.reshape(self.batch_size, -1).to(self.device),
+        )
+        # for param in self.model.actor.parameters():
+        #     print(param.requires_grad)
+        actor_params = [p for p in self.model.actor.parameters() if p.requires_grad]
+        grads_critic_subset = torch.autograd.grad(loss_act, actor_params, create_graph=True, allow_unused=True)
+        grads_critic = []
+        subset_idx = 0
+        for p in self.model.actor.parameters():
+            if p.requires_grad:
+                grads_critic.append(grads_critic_subset[subset_idx])
+                subset_idx += 1
+            else:
+                grads_critic.append(None)
+        self.updater.step(self.model.actor, grads_critic, "phi_old", 1e-3)
+        old_param = self.updater.get("phi_old")
+
+        prior_sample = self.model.actor.prior.sample((bs,))
+        act_pi = self.model.actor.reverse_with_params(prior_sample,(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param)
+        Q1_pi_val, _ = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act_pi.squeeze(),)
+        z, _, logdets = self.model.actor.forward_with_params(act_pi.squeeze().detach(),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param)
+        logprob = self.model.actor.prior.log_prob(z) + logdets
+        z_bc, _, logdets_bc = self.model.actor.forward_with_params(act_val.squeeze().to(self.device),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param)
+        logprob_bc = self.model.actor.prior.log_prob(z_bc) + logdets_bc
+        policy_loss_val = (-Q1_pi_val + logprob).mean() + (-logprob_bc).mean()
+
+        grads_mcritic_subset = torch.autograd.grad(loss_auxiliary, actor_params, create_graph=True, allow_unused=True)
+        grads_mcritic = []
+        subset_idx = 0
+        for p in self.model.actor.parameters():
+            if p.requires_grad:
+                grads_mcritic.append(grads_mcritic_subset[subset_idx])
+                subset_idx += 1
+            else:
+                grads_mcritic.append(None)
+        self.updater.step(self.model.actor, grads_mcritic, "phi_new", 1e-3, from_params=old_param)
+        new_param = self.updater.get("phi_new")
+        
+        prior_sample = self.model.actor.prior.sample((bs,))
+        act_pi_new = self.model.actor.reverse_with_params(prior_sample,(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        Q1_pi_new, _ = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act_pi_new.squeeze(),)
+        z_new, _, logdets_new = self.model.actor.forward_with_params(act_pi_new.squeeze().detach(),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        logprob_new = self.model.actor.prior.log_prob(z_new) + logdets_new
+        z_bc_new, _, logdets_bc_new = self.model.actor.forward_with_params(act.squeeze().to(self.device),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        logprob_bc_new = self.model.actor.prior.log_prob(z_bc_new) + logdets_bc_new
+        policy_loss_val_new = (-Q1_pi_new + logprob_new).mean() + (-logprob_bc_new).mean()
+        
+        # print(f"DEBUG: policy_loss_val_new grad_fn: {policy_loss_val_new.grad_fn}")
+        ###############################
+        ### compute loss meta       ###
+        ###############################
+        utility = policy_loss_val - policy_loss_val_new
+        utility = torch.tanh(utility)
+        # utility = utility / (1 + torch.abs(utility)) 
+        loss_meta = -utility
+        self.meta_critic_optimizer.zero_grad()
+
+        loss_meta.backward(retain_graph=True)
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
+
+        self.actor_optimizer.zero_grad()
+        loss_auxiliary.backward(retain_graph=True)
+        loss_act.backward()
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+
+        self.meta_critic_optimizer.step()
+        lm = loss_meta.data.item()
+        self.actor_optimizer.step()
+        la = loss_act.data.item()
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
+
+
+    def finetune(self, update_actor=False, data_for_logging=None):
+        grad_metrics = {}
+        sample = self.replay_buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+        sample_val = self.replay_buffer.sample(self.batch_size)
+        obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample.values())
+        bs = obs.shape[0]
+        with torch.no_grad():
+            prior_sample_target = self.model.actor.prior.sample((bs,))
+            next_act_target = self.model.actor.reverse(
+                prior_sample_target,
+                (
+                    next_obs.to(self.device),
+                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                ),
+            )
+            Q_target_1, Q_target_2 = self.target.critic(
+                (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
+            )
+            Q_target_min = torch.min(torch.cat((Q_target_1, Q_target_2), 1), dim=1)[
+                0
+            ].unsqueeze(-1)
+
+            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
+                self.device
+            )
+
+        Q1, Q2 = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act.squeeze().to(self.device),
+        )
+
+        loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
+        self.critic_optimizer.zero_grad()
+        loss_critic.backward()
+        self.critic_optimizer.step()
+        lc = loss_critic.data.item()
+
+        if data_for_logging is not None:
+            data_for_logging[0].log(
+                {
+                    "loss/critic": lc,
+                },
+                step=data_for_logging[1],
+            )
+
+
+
+
+        prior_sample = self.model.actor.prior.sample((bs,))
+        act_pi = self.model.actor.reverse(
+            prior_sample,
+            (
+                obs.to(self.device),
+                r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+            ),
+        )
+
+        # act_pi = (act + torch.randn_like(act)).to(self.device)
+
+        Q1_pi, _ = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act_pi.squeeze(),
+        )
+
+        z, _, logdets = self.model.actor(
+            act_pi.squeeze().detach(),
+            (
+                obs.to(self.device),
+                r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+            ),
+        )
+        logprob = self.model.actor.prior.log_prob(z) + logdets
+
+        z_bc, _, logdets_bc = self.model.actor(
+            act.squeeze().to(self.device),
+            (
+                obs.to(self.device),
+                r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+            ),
+        )
+        logprob_bc = self.model.actor.prior.log_prob(z_bc) + logdets_bc
+
+        loss_act = (-Q1_pi + logprob).mean() + (-logprob_bc).mean()
+        # loss_act = (-Q1_pi + logprob).mean()
+        # loss_act = (-Q1_pi).mean()
+        loss_auxiliary = self.model.meta_critic(
+            (
+                obs.reshape(self.batch_size, -1).to(self.device),
+                r_obs.reshape(self.batch_size, -1).to(self.device),
+            ),
+            act.squeeze().to(self.device),
+            z.reshape(self.batch_size, -1).to(self.device),
+        )
+        # for param in self.model.actor.parameters():
+        #     print(param.requires_grad)
+        actor_params = [p for p in self.model.actor.parameters() if p.requires_grad]
+        grads_critic_subset = torch.autograd.grad(loss_act, actor_params, create_graph=True, allow_unused=True)
+        grads_critic = []
+        subset_idx = 0
+        for p in self.model.actor.parameters():
+            if p.requires_grad:
+                grads_critic.append(grads_critic_subset[subset_idx])
+                subset_idx += 1
+            else:
+                grads_critic.append(None)
+        self.updater.step(self.model.actor, grads_critic, "phi_old", 1e-3)
+        old_param = self.updater.get("phi_old")
+
+        prior_sample = self.model.actor.prior.sample((bs,))
+        act_pi = self.model.actor.reverse_with_params(prior_sample,(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param)
+        Q1_pi_val, _ = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act_pi.squeeze(),)
+        z, _, logdets = self.model.actor.forward_with_params(act_pi.squeeze().detach(),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param)
+        logprob = self.model.actor.prior.log_prob(z) + logdets
+        z_bc, _, logdets_bc = self.model.actor.forward_with_params(act_val.squeeze().to(self.device),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param)
+        logprob_bc = self.model.actor.prior.log_prob(z_bc) + logdets_bc
+        policy_loss_val = (-Q1_pi_val + logprob).mean() + (-logprob_bc).mean()
+        policy_loss_val = (-Q1_pi_val + logprob).mean()
+        policy_loss_val = (-Q1_pi_val).mean()
+
+        grads_mcritic_subset = torch.autograd.grad(loss_auxiliary, actor_params, create_graph=True, allow_unused=True)
+        grads_mcritic = []
+        subset_idx = 0
+        for p in self.model.actor.parameters():
+            if p.requires_grad:
+                grads_mcritic.append(grads_mcritic_subset[subset_idx])
+                subset_idx += 1
+            else:
+                grads_mcritic.append(None)
+        self.updater.step(self.model.actor, grads_mcritic, "phi_new", 1e-3, from_params=old_param)
+        new_param = self.updater.get("phi_new")
+        
+        prior_sample = self.model.actor.prior.sample((bs,))
+        act_pi_new = self.model.actor.reverse_with_params(prior_sample,(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        Q1_pi_new, _ = self.model.critic((obs_val.to(self.device), r_obs_val.to(self.device)),act_pi_new.squeeze(),)
+        z_new, _, logdets_new = self.model.actor.forward_with_params(act_pi_new.squeeze().detach(),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        logprob_new = self.model.actor.prior.log_prob(z_new) + logdets_new
+        z_bc_new, _, logdets_bc_new = self.model.actor.forward_with_params(act.squeeze().to(self.device),(obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=new_param)
+        logprob_bc_new = self.model.actor.prior.log_prob(z_bc_new) + logdets_bc_new
+        policy_loss_val_new = (-Q1_pi_new + logprob_new).mean() + (-logprob_bc_new).mean()
+        policy_loss_val_new = (-Q1_pi_new + logprob_new).mean()
+        policy_loss_val_new = (-Q1_pi_new).mean()
+
+        # print(f"DEBUG: policy_loss_val_new grad_fn: {policy_loss_val_new.grad_fn}")
+        ###############################
+        ### compute loss meta       ###
+        ###############################
+        utility = policy_loss_val - policy_loss_val_new
+        utility = torch.tanh(utility)
+        # utility = utility / (1 + torch.abs(utility)) 
+        loss_meta = -utility
+        self.meta_critic_optimizer.zero_grad()
+
+        loss_meta.backward(retain_graph=True)
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
+
+        self.actor_optimizer.zero_grad()
+        loss_auxiliary.backward(retain_graph=True)
+        loss_act.backward()
+        if data_for_logging is not None:
+            grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+
+        self.meta_critic_optimizer.step()
+        lm = loss_meta.data.item()
+        self.actor_optimizer.step()
+        la = loss_act.data.item()
+        with torch.no_grad(): 
+            if data_for_logging is not None:
+                log_data = {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "loss/meta": lm,
+                    "loss/auxiliary": loss_auxiliary.data.item(),
+
+                }
+                log_data.update(grad_metrics) # 勾配情報を追加
+                data_for_logging[0].log(log_data, step=data_for_logging[1])
+
+    def update_target(self):
+        for param, target_param in zip(
+            self.model.parameters(), self.target.parameters()
+        ):
+            target_param.data.mul_(self.polyak)
+            target_param.data.add_((1 - self.polyak) * param.data)

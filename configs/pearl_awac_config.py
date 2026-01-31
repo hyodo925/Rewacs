@@ -47,6 +47,7 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "orca"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -106,9 +107,9 @@ class Train:
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    val_render = False
+    val_render = True
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:

@@ -91,8 +91,8 @@ else:
 
 ############### policy model ##################
 # Settings
-run_dir = "wandb/awac_training/wandb/run-20260124_141502-b6znpdu2"
-
+# run_dir = "wandb/awac_training/wandb/run-20260124_141502-b6znpdu2"
+run_dir = "wandb/awac_training/wandb/run-20260127_123238-tac0gepj"
 config_path = os.path.join("configs/awac_with_flow_config.py")
 
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
@@ -247,17 +247,31 @@ flow.load_model(flow_model_path)
 flow.to(device)
 
 
-if not cfg.train.onpolicy_finetuning:
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        k=cfg.train.preliminary_exp_n,
-        scenario=cfg.sim.train_scenario,
-        human_num=cfg.sim.human_num,
-        policy=cfg.humans.policy,
-        # k=100,
-        render=False,
-    )
+# if not cfg.train.onpolicy_finetuning:
+#     expl_logs = expl.exploration_k_ep_orca(
+#         buffer=buffer,
+#         k=cfg.train.preliminary_exp_n,
+#         scenario=cfg.sim.train_scenario,
+#         human_num=cfg.sim.human_num,
+#         policy=cfg.humans.policy,
+#         # k=100,
+#         render=False,
+#     )
 
+if cfg.train.pre_explor:
+    with tqdm(range(cfg.train.pre_explor_itr)) as pbar:
+        for i in enumerate(pbar):
+            expl_logs = expl.exploration_k_ep_with_flow_mode(
+                buffer=buffer,
+                flow=flow,
+                model=model,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.test_policy,
+                pbar=pbar,
+                mode=cfg.train.finetune_mode,
+                render=False,
+            )
 
 loss_list = []
 val_logs = eval_policy(
@@ -376,7 +390,7 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
 
                 val_log_data = [i + 1] + list(val_logs)
                 val_table.add_data(*val_log_data)
-                if i + 1 == cfg.train.total_it:
+                if i + 1 == cfg.train.finetune_total_it:
                     run.log({"Validation Table": val_table})
 
 if cfg.log.wandb:

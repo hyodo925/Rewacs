@@ -2,9 +2,9 @@
 
 MODES=(
   learning_based_only
-  rule_based_only
-  switching_all
-  switching_data_only
+  # rule_based_only
+  # switching_all
+  # switching_data_only
 )
 
 SEEDS=(0 1 2 3 4)

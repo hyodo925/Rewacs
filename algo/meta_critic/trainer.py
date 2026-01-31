@@ -161,15 +161,17 @@ class MetaCriticAWAC:
         self.actor_optimizer.step()
         la = loss_act.data.item()
 
-        if data_for_logging is not None:
-            data_for_logging[0].log(
-                {
-                    "loss/actor": la,
-                    "loss/meta": lm,
-                    # "abs_theta": abs_theta,
-                },
-                step=data_for_logging[1],
-            )
+        with torch.no_grad():
+            if data_for_logging is not None:
+                data_for_logging[0].log(
+                    {
+                        "loss/actor": la,
+                        "loss/meta": lm,
+                        "log_prob": self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device)),action_gen.squeeze().to(self.device),)
+                        # "abs_theta": abs_theta,
+                    },
+                    step=data_for_logging[1],
+                )
 
     def update_target(self):
         for param, target_param in zip(

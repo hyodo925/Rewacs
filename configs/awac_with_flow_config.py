@@ -38,7 +38,7 @@ class Simulation:
 
     square_width = 10
     circle_radius = 4
-    human_num = 5
+    human_num = 10
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -94,10 +94,10 @@ class Transfunc:
 class Train:
     random_seed = 17
     offline_learning = False
-    lr = 1e-4
+    lr = 3e-4
     preliminary_exp_n = 200
     total_it = 10000
-    finetune_total_it = 100
+    finetune_total_it = 1000
     batch_size = 100
     buffer_capacity = 100000
     actor_update_interval = 2
@@ -106,15 +106,16 @@ class Train:
     training_alg = "AWAC"
 
     onpolicy_finetuning = False
-    fintuning_rollout_itr = 5
+    fintuning_rollout_itr = 1
     finetune_mode = "learning_based_only" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
-
+    pre_explor = True
+    pre_explor_itr = 100
 
 
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    finetune_eval_interval = 1
+    finetune_eval_interval = 10
     val_render = True
     render = False
     render_type = "traj"

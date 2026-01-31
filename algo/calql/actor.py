@@ -61,11 +61,17 @@ class SocialActorCalQL(nn.Module):
         mean, log_std = self.forward(data, repeat=repeat)
         std = log_std.exp()
 
-        mean = torch.tanh(mean) * self.act_max
+        # mean = torch.tanh(mean) * self.act_max
         dist = Normal(mean, std)
 
         action = dist.rsample()
         log_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        log_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+            axis=-1, keepdim=True
+        )
+        log_prob = torch.clamp(log_prob, min=-100.0)
+
+        action = torch.tanh(action) * self.act_max
 
         return action, log_prob, mean
 
@@ -78,7 +84,7 @@ class SocialActorCalQL(nn.Module):
 
         x = self.net(data)
         mean = self.mean_linear(x)
-        mean = torch.tanh(mean) * self.act_max
+        # mean = torch.tanh(mean) * self.act_max
 
         log_std = torch.sigmoid(self.log_std_logits(x))
         log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
@@ -86,5 +92,8 @@ class SocialActorCalQL(nn.Module):
 
         dist = Normal(mean, std)
         log_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
-
+        log_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+            axis=1, keepdim=True
+        )
+        log_prob = torch.clamp(log_prob, min=-100.0)
         return log_prob

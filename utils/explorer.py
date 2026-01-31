@@ -107,6 +107,7 @@ class ExplorerCrowdSim:
         collision_cases = []
         timeout_cases = []
         ###############################
+        print(scenario, human_num, policy)
         for _ in tqdm(range(k), desc="Preliminary Exploration"):
             # if random_p_num:
             #     p_num = np.random.randint(*p_range)
@@ -131,6 +132,7 @@ class ExplorerCrowdSim:
             self.env.set_train_scenario(scenario)
             # self.env.set_test_scenario(scenario)
             self.env.set_policy(policy)
+            
 
             robot_state, ob = self.env.reset("train")
             done = False

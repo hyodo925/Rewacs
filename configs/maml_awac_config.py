@@ -20,7 +20,7 @@ class Reward:
 
 
 class Simulation:
-    train_scenario = "square_crossing"
+    train_scenario = "circle_crossing"
     val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
     finetune_scenario = "circle_crossing"
@@ -38,7 +38,7 @@ class Simulation:
 
     square_width = 10
     circle_radius = 4
-    human_num = 5
+    human_num = 6
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -47,6 +47,7 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "orca"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -106,7 +107,7 @@ class Evaluation:
     final_eval_num = 500
     val_render = False
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:

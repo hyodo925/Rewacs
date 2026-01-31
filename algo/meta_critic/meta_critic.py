@@ -45,7 +45,7 @@ class MetaCriticGraphNet(nn.Module):
             data = self.integrator(*obs)
         data = torch.cat([data, act, other_output], 1)
         x = self.net1(data)
-        x = F.normalize(x, p=2, dim=-1, eps=1e-8)
+        x = x / torch.norm(x, dim=1, keepdim=True) 
         x = self.output_layer(x)
         x = nn.functional.softplus(x)
         return torch.mean(x)

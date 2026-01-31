@@ -99,8 +99,8 @@ class Train:
     polyak = 0.995
     training_alg = "AWAC"
 
-    onpolicy_finetuning = True
-    fintuning_rollout_itr = 5
+    onpolicy_finetuning = False
+    fintuning_rollout_itr = 1
 
 
 class Evaluation:

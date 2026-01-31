@@ -14,6 +14,7 @@ import numpy as np
 import torch
 from torchrl.data import LazyTensorStorage, ListStorage, ReplayBuffer
 from tqdm import tqdm, trange
+from torchviz import make_dot
 
 from rewacs.envs import CrowdSim
 from rewacs.envs.policy.policy_factory import policy_factory
@@ -283,6 +284,8 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
         with open(train_log_csv, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([i + 1, lc, val_la])
+
+        trainer.visualize_computational_graph(trainer)
 
         # total_it += 1
         if ((i + 1) % cfg.train.target_update_interval) == 0:

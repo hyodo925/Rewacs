@@ -7,17 +7,19 @@ MODES=(
   # switching_data_only
 )
 
-SEEDS=(0 1 2 3 4)
-# HUMANS=(10)
-HUMANS=(5 6 7 8 9 10)
+# SEEDS=(0 1 2 3 4)
+SEEDS=(0)
+HUMANS=(5)
+# HUMANS=(5 6 7 8 9 10)
 
-for SEED in "${SEEDS[@]}"; do
+for HUMAN in "${HUMANS[@]}"; do
   for MODE in "${MODES[@]}"; do
-    for HUMAN in "${HUMANS[@]}"; do
-      uv run python3 finetune_awac_seed_with_flow.py \
+    for SEED in "${SEEDS[@]}"; do
+      uv run python3 finetune_awac_meta_critic.py \
         --train-finetune_mode "$MODE" \
         --train-random_seed "$SEED" \
         --sim-human_num "$HUMAN" 
     done
   done
 done
+

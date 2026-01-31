@@ -9,12 +9,14 @@ class NFRLNavigation(nn.Module):
         self,
         actor,
         critic,
+        meta_critic=None,
         device="cpu",
     ):
         super(NFRLNavigation, self).__init__()
 
         self.actor = actor
         self.critic = critic
+        self.meta_critic = meta_critic
         self.device = device
 
     def to(self, device):

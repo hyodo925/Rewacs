@@ -7,6 +7,16 @@ import random
 from tqdm import tqdm
 import numpy as np
 
+def get_grad_norm(parameters):
+    parameters = [p for p in parameters if p.grad is not None]
+    if len(parameters) == 0:
+        return 0.0
+    total_norm = torch.norm(torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2)
+    return total_norm.item()
+
+def get_param_norm(parameters):
+    total_norm = torch.norm(torch.stack([torch.norm(p.detach(), 2) for p in parameters]), 2)
+    return total_norm.item()
 
 class MAMLAWAC:
     def __init__(
@@ -37,10 +47,9 @@ class MAMLAWAC:
         self.inner_value_lr = inner_value_lr
         self.batch_size = batch_size
         self.polyak = polyak
-        self.gamma = torch.as_tensor([gamma])
-        self.beta = torch.as_tensor([beta])
-
         self.device = model.device
+        self.gamma = torch.as_tensor([gamma]).to(self.device)
+        self.beta = torch.as_tensor([beta]).to(self.device)
 
         self.num_tasks = num_tasks
         self.itr_inner_loop = 1
@@ -51,7 +60,7 @@ class MAMLAWAC:
         self.value_lrs = None
         self.q_lrs = None
         self.adv_coef = None
-        self.learn_lr = False
+        self.learn_lr = True
         if self.learn_lr:
             self.lrlr = 1e-4
             self.policy_lrs = [torch.nn.Parameter(torch.tensor(float(np.log(inner_policy_lr))).to(self.device))
@@ -117,9 +126,7 @@ class MAMLAWAC:
         weights = self.safe_exp(adv / self.beta)
         weights = torch.clamp(weights, max=100.0)
         weights = weights / (weights.mean() + 1e-8)
-        
-        loss_act = -(
-                policy.get_log_prob(
+        get_log_prob = policy.get_log_prob(
                     (
                         obs.to(self.device),
                         r_obs.reshape(self.batch_size, 1, -1).to(
@@ -128,9 +135,11 @@ class MAMLAWAC:
                     ),
                     act.squeeze().to(self.device),
                 )
+        loss_act = -(
+                get_log_prob
                 * weights
             ).mean()
-        return loss_act
+        return loss_act, get_log_prob
     def value_loss(self,q_function, target, prev_obs, obs, prev_r_obs, r_obs, act, rwd, done):
         next_act_target, next_log_prob, _ = self.model.actor.sample(
             (
@@ -166,10 +175,10 @@ class MAMLAWAC:
         qf = self.model.critic
         qf.train()
         qf_target = copy.deepcopy(qf)
-        # opt = torch.optim.SGD([{'params': p, 'lr': None} for p in qf.parameters()])
-        opt = torch.optim.SGD(self.model.critic.parameters(), lr=self.inner_value_lr)
-        # with higher.innerloop_ctx(qf, opt, override={'lr': [F.softplus(l) for l in self.q_lrs]}, copy_initial_weights=False) as (f_q_function, diff_q_opt):
-        with higher.innerloop_ctx(qf, opt, copy_initial_weights=False) as (f_q_function, diff_q_opt):    
+        opt = torch.optim.SGD([{'params': p, 'lr': None} for p in qf.parameters()])
+        # opt = torch.optim.SGD(self.model.critic.parameters(), lr=self.inner_value_lr)
+        with higher.innerloop_ctx(qf, opt, override={'lr': [F.softplus(l) for l in self.q_lrs]}, copy_initial_weights=False) as (f_q_function, diff_q_opt):
+        # with higher.innerloop_ctx(qf, opt, copy_initial_weights=False) as (f_q_function, diff_q_opt):    
             for _ in range(self.itr_inner_loop):
                 inner_value_loss = self.value_loss(f_q_function, qf_target, obs.to(self.device), next_obs.to(self.device), r_obs.to(self.device), next_r_obs.to(self.device), act.to(self.device), rwd.to(self.device), done.to(self.device))
                 diff_q_opt.step(inner_value_loss)
@@ -179,18 +188,18 @@ class MAMLAWAC:
             # (meta_value_loss / self.num_tasks).backward()
         # value_loss = self.value_loss(self.model.critic, self.target.critic, obs_val.to(self.device), next_obs_val.to(self.device), r_obs_val.to(self.device), next_r_obs_val.to(self.device), act_val.to(self.device), rwd_val.to(self.device), done_val.to(self.device))
         adapted_value_function = f_q_function
-        # opt = torch.optim.SGD([{'params': p, 'lr': None} for p in self.model.actor.parameters()])
-        opt = torch.optim.SGD(self.model.actor.parameters(), lr=self.inner_policy_lr)
+        opt = torch.optim.SGD([{'params': p, 'lr': None} for p in self.model.actor.parameters()])
+        # opt = torch.optim.SGD(self.model.actor.parameters(), lr=self.inner_policy_lr)
         self.model.actor.train()
-        # with higher.innerloop_ctx(self.model.actor, opt, override={'lr': [F.softplus(l) for l in self.policy_lrs]}, copy_initial_weights=False) as (f_policy, diff_policy_opt):
-        with higher.innerloop_ctx(self.model.actor, opt, copy_initial_weights=False) as (f_policy, diff_policy_opt):
+        with higher.innerloop_ctx(self.model.actor, opt, override={'lr': [F.softplus(l) for l in self.policy_lrs]}, copy_initial_weights=False) as (f_policy, diff_policy_opt):
+        # with higher.innerloop_ctx(self.model.actor, opt, copy_initial_weights=False) as (f_policy, diff_policy_opt):
             for _ in range(self.itr_inner_loop):
-                inner_policy_loss = self.advantage_loss(f_policy, adapted_value_function, obs.to(self.device), r_obs.to(self.device), act.to(self.device))
+                inner_policy_loss, get_log_prob_inner = self.advantage_loss(f_policy, adapted_value_function, obs.to(self.device), r_obs.to(self.device), act.to(self.device))
                 diff_policy_opt.step(inner_policy_loss)
-            meta_policy_loss = self.advantage_loss(f_policy, adapted_value_function, obs_val.to(self.device), r_obs_val.to(self.device), act_val.to(self.device))
+            meta_policy_loss, get_log_prob_outer = self.advantage_loss(f_policy, adapted_value_function, obs_val.to(self.device), r_obs_val.to(self.device), act_val.to(self.device))
             # (meta_policy_loss / self.num_tasks).backward()
         # policy_loss = self.advantage_loss(self.model.actor, self.model.critic, obs_val.to(self.device), r_obs_val.to(self.device), act_val.to(self.device))
-        return  meta_value_loss, meta_policy_loss, inner_value_loss, inner_policy_loss
+        return  meta_value_loss, meta_policy_loss, inner_value_loss, inner_policy_loss, get_log_prob_inner, get_log_prob_outer
         # return value_loss, policy_loss
     
     
@@ -205,7 +214,7 @@ class MAMLAWAC:
             # for batch in task:
             sample = task.sample(self.batch_size)
             sample_val = task.sample(self.batch_size)
-            meta_value_loss, meta_policy_loss, inner_value_loss, inner_policy_loss = self.step(sample, sample_val)
+            meta_value_loss, meta_policy_loss, inner_value_loss, inner_policy_loss, get_log_prob_inner, get_log_prob_outer = self.step(sample, sample_val)
             meta_policy_losses.append(meta_policy_loss)
             meta_value_losses.append(meta_value_loss)
             total_meta_value_loss += meta_value_loss
@@ -213,24 +222,65 @@ class MAMLAWAC:
 
         (total_meta_value_loss / self.num_tasks).backward()
         (total_meta_policy_loss / self.num_tasks).backward()
+
+        # --- ログ用：アウターループの勾配ノルムを取得 ---
+        meta_actor_grad_norm = get_grad_norm(self.model.actor.parameters())
+        meta_critic_grad_norm = get_grad_norm(self.model.critic.parameters())
+        
+        # 学習率パラメータ自体の勾配ノルム (learn_lr=True の場合)
+        lr_q_grad_norm = get_grad_norm(self.q_lrs) if self.learn_lr else 0
+        lr_pi_grad_norm = get_grad_norm(self.policy_lrs) if self.learn_lr else 0
+
+        # モデル更新
         meta_policy_grad = self.update_model(self.model.actor, self.actor_optimizer, clip=self.grad_clip)
         meta_critic_grad = self.update_model(self.model.critic, self.critic_optimizer, clip=self.grad_clip)
-        # if self.lrlr > 0:
-        #     self.update_params(self.q_lrs, self.q_lr_optimizer)
-        #     self.update_params(self.policy_lrs, self.policy_lr_optimizer)
+
+        # 学習率の更新
+        if self.learn_lr:
+            self.q_lr_optimizer.step()
+            self.policy_lr_optimizer.step()
+            self.q_lr_optimizer.zero_grad()
+            self.policy_lr_optimizer.zero_grad()
+            
+            # 現在の「実際の学習率」の平均値を記録
+            avg_q_lr = torch.mean(torch.stack([F.softplus(l) for l in self.q_lrs])).item()
+            avg_pi_lr = torch.mean(torch.stack([F.softplus(l) for l in self.policy_lrs])).item()
 
         if data_for_logging is not None:
-            data_for_logging[0].log(
-                {
-                    "meta_value_losses_mean": meta_value_loss,
-                    "meta_policy_losses_mean": meta_policy_loss,
-                    "meta_actor_grad":meta_policy_grad,
-                    "meta_critic_grad":meta_critic_grad,
-                    "inner_value_loss":inner_value_loss,
-                    "inner_policy_loss":inner_policy_loss,
-                },
-                step=data_for_logging[1],
-            )
+            data_for_logging[0].log({
+                "Loss/Meta_Value": total_meta_value_loss.item() / self.num_tasks,
+                "Loss/Meta_Policy": total_meta_policy_loss.item() / self.num_tasks,
+                "Loss/Inner_Value": inner_value_loss.item(),
+                "Loss/Inner_Policy": inner_policy_loss.item(),
+                "GradNorm/Meta_Actor": meta_actor_grad_norm,
+                "GradNorm/Meta_Critic": meta_critic_grad_norm,
+                "GradNorm/LR_Q": lr_q_grad_norm,
+                "GradNorm/LR_Policy": lr_pi_grad_norm,
+                "LR/Current_Q_Avg": avg_q_lr if self.learn_lr else self.inner_value_lr,
+                "LR/Current_Policy_Avg": avg_pi_lr if self.learn_lr else self.inner_policy_lr,
+                "LogProb/inner": get_log_prob_inner.mean().data.item(),
+                "LogProb/outer": get_log_prob_outer.mean().data.item()
+            }, step=data_for_logging[1])
+
+    def eval_step(self, buffer, data_for_logging=None):
+        # for task in self.tasks:
+        sample = buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+        qf = self.model.critic
+        qf_target = copy.deepcopy(qf)
+        inner_value_loss = self.value_loss(self.model.critic, qf_target, obs.to(self.device), next_obs.to(self.device), r_obs.to(self.device), next_r_obs.to(self.device), act.to(self.device), rwd.to(self.device), done.to(self.device))
+        inner_policy_loss, get_log_prob_inner = self.advantage_loss(self.model.actor, self.model.critic, obs.to(self.device), r_obs.to(self.device), act.to(self.device))
+        inner_value_loss.backward()
+        critic_grad = self.update_model(self.model.critic, self.critic_optimizer, clip=self.grad_clip)
+        inner_policy_loss.backward()
+        policy_grad = self.update_model(self.model.actor, self.actor_optimizer, clip=self.grad_clip)
+
+        if data_for_logging is not None:
+            data_for_logging[0].log({
+                "Loss/Inner_Value": inner_value_loss.item(),
+                "Loss/Inner_Policy": inner_policy_loss.item(),
+                "LogProb/inner": get_log_prob_inner.mean().data.item(),
+            }, step=data_for_logging[1])
 
     def update_target(self):
         for param, target_param in zip(

@@ -3,7 +3,7 @@ import copy
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
-
+from torchviz import make_dot
 
 class AWAC:
     def __init__(
@@ -25,6 +25,7 @@ class AWAC:
         self.critic_optimizer = critic_optimizer
         self.batch_size = batch_size
         self.polyak = polyak
+        self.grad_clip = 1e9
         self.device = model.device
         self.gamma = torch.as_tensor([gamma]).to(self.device)
         self.beta = torch.as_tensor([beta]).to(self.device)
@@ -64,6 +65,7 @@ class AWAC:
         loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
         self.critic_optimizer.zero_grad()
         loss_critic.backward()
+        # grad_actor = torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), self.grad_clip)
         self.critic_optimizer.step()
         lc = loss_critic.data.item()
 
@@ -99,32 +101,223 @@ class AWAC:
                 # adv = qw_ref - qw_gen
                 # weights = F.softmax(adv / beta, dim=0)
                 weights = self.safe_exp(adv / self.beta)
-
-            loss_act = -(
-                self.model.actor.get_log_prob(
+            
+            log_prob = self.model.actor.get_log_prob(
                     (
                         obs.to(self.device),
                         r_obs.reshape(self.batch_size, 1, -1).to(self.device),
                     ),
                     act.squeeze().to(self.device),
                 )
-                * weights
-            ).mean()
+            loss_act = -(log_prob* weights).mean()
 
             self.actor_optimizer.zero_grad()
             loss_act.backward()
+            # grad_actor = torch.nn.utils.clip_grad_norm_(self.model.actor.parameters(), self.grad_clip)
             self.actor_optimizer.step()
             la = loss_act.data.item()
+
 
             if data_for_logging is not None:
                 data_for_logging[0].log(
                     {
                         "loss/actor": la,
+                        "log_prob": log_prob.mean().data.item(),
+                        # "grad":grad_actor
                     },
                     step=data_for_logging[1],
                 )
         
+
         return lc, la
+
+    def update_target(self):
+        for param, target_param in zip(
+            self.model.parameters(), self.target.parameters()
+        ):
+            target_param.data.mul_(self.polyak)
+            target_param.data.add_((1 - self.polyak) * param.data)
+
+
+    def visualize_computational_graph(self, trainer):
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(trainer.replay_buffer.sample(1).values())
+
+        Q1, Q2 = trainer.model.critic(
+            (obs.to(trainer.device), r_obs.to(trainer.device)),
+            act.view(1,-1).to(trainer.device),
+        )
+
+        # ... (weightsの計算は省略) ...
+        with torch.no_grad():
+                action_gen, _, _ = trainer.model.actor.sample(
+                    (
+                        obs.to(trainer.device),
+                        r_obs.reshape(1, 1, -1).to(trainer.device),
+                    )
+                )
+
+                qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+
+                v_act1, v_act2 = trainer.model.critic(
+                    (obs.to(trainer.device), r_obs.to(trainer.device)),
+                    action_gen.detach(),
+                )
+
+                qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape(
+                    (-1, 1)
+                )
+
+                adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+                # adv = qw_ref - qw_gen
+                # weights = F.softmax(adv / beta, dim=0)
+                weights = trainer.safe_exp(adv / trainer.beta)
+        log_prob = trainer.model.actor.get_log_prob(
+            (obs.to(trainer.device), r_obs.reshape(1, 1, -1).to(trainer.device)),
+            act.view(1,-1).to(trainer.device)
+        )
+        loss_act = -(log_prob * weights).mean()
+
+        # 可視化
+        params = dict(trainer.model.actor.named_parameters())
+        dot = make_dot(loss_act, params=params)
+        dot.render("awac_actor_graph", format="png")
+
+class AWACMultiTask:
+    def __init__(
+        self,
+        model,
+        tasks,
+        actor_optimizer,
+        critic_optimizer,
+        batch_size,
+        polyak=0.995,
+        gamma=0.9,
+        beta=0.3,
+    ):
+        self.alg_name = "AWACMultiTask"
+        self.model = model
+        self.tasks = tasks
+        self.target = copy.deepcopy(model)
+        self.actor_optimizer = actor_optimizer
+        self.critic_optimizer = critic_optimizer
+        self.batch_size = batch_size
+        self.polyak = polyak
+        self.grad_clip = 1e9
+        self.device = model.device
+        self.gamma = torch.as_tensor([gamma]).to(self.device)
+        self.beta = torch.as_tensor([beta]).to(self.device)
+
+        
+
+    def safe_exp(self, x):
+        return torch.where(x < 50, torch.exp(x), x)
+
+    def step(self, buffer, update_actor=False, data_for_logging=None):
+        sample = buffer.sample(self.batch_size)
+        obs, next_obs, r_obs, next_r_obs, act, rwd, done = list(sample.values())
+
+        with torch.no_grad():
+            next_act_target, next_log_prob, _ = self.model.actor.sample(
+                (
+                    next_obs.to(self.device),
+                    next_r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                )
+            )
+            Q_target_1, Q_target_2 = self.target.critic(
+                (next_obs.to(self.device), next_r_obs.to(self.device)), next_act_target
+            )
+            Q_target_min = torch.min(torch.cat((Q_target_1, Q_target_2), 1), dim=1)[
+                0
+            ].unsqueeze(-1)
+
+            Q_target = rwd.to(self.device) + (self.gamma * Q_target_min) * done.to(
+                self.device
+            )
+
+        Q1, Q2 = self.model.critic(
+            (obs.to(self.device), r_obs.to(self.device)),
+            act.squeeze().to(self.device),
+        )
+
+        loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
+
+        if update_actor:
+            with torch.no_grad():
+                action_gen, _, _ = self.model.actor.sample(
+                    (
+                        obs.to(self.device),
+                        r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                    )
+                )
+
+                qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
+
+                v_act1, v_act2 = self.model.critic(
+                    (obs.to(self.device), r_obs.to(self.device)),
+                    action_gen.detach(),
+                )
+
+                qw_gen = torch.min(torch.cat((v_act1, v_act2), 1), dim=1)[0].reshape(
+                    (-1, 1)
+                )
+
+                adv = torch.max(torch.zeros_like(qw_ref), qw_ref - qw_gen)
+                # adv = qw_ref - qw_gen
+                # weights = F.softmax(adv / beta, dim=0)
+                weights = self.safe_exp(adv / self.beta)
+            
+            log_prob = self.model.actor.get_log_prob(
+                    (
+                        obs.to(self.device),
+                        r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                    ),
+                    act.squeeze().to(self.device),
+                )
+            loss_act = -(log_prob* weights).mean()
+            if data_for_logging is not None:
+                data_for_logging[0].log(
+                    {
+                        "log_prob": log_prob.mean().data.item(),
+                    },
+                    step=data_for_logging[1],
+                )
+
+        
+        return loss_critic, loss_act
+    
+    def update(self, update_actor=False, data_for_logging=None):
+        loss_critic = 0
+        loss_act = 0
+        for task in self.tasks:
+            lc, la = self.step(task, update_actor, data_for_logging)
+            loss_critic += lc
+            loss_act += la 
+
+        self.critic_optimizer.zero_grad()
+        (loss_critic / len(self.tasks)).backward()
+        grad_critic = torch.nn.utils.clip_grad_norm_(self.model.critic.parameters(), self.grad_clip)
+        self.critic_optimizer.step()
+        lc = loss_critic.data.item()
+
+        self.actor_optimizer.zero_grad()
+        (loss_act / len(self.tasks)).backward()
+        grad_actor = torch.nn.utils.clip_grad_norm_(self.model.actor.parameters(), self.grad_clip)
+        self.actor_optimizer.step()
+        la = loss_act.data.item()
+
+        if data_for_logging is not None:
+            data_for_logging[0].log(
+                {
+                    "loss/critic": lc,
+                    "loss/actor": la,
+                    "grad/actor":grad_actor,
+                    "grad/critic":grad_critic,
+                },
+                step=data_for_logging[1],
+            )
+
+        return loss_critic, loss_act
+
 
     def update_target(self):
         for param, target_param in zip(

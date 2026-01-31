@@ -2,6 +2,7 @@ import numpy as np
 import torch as torch
 import torch.nn as nn
 from .utils import extend_and_repeat
+import torch.nn.functional as F
 
 class SocialCritic(nn.Module):
     def __init__(
@@ -42,7 +43,10 @@ class SocialCritic(nn.Module):
 
         if not self.single:
             data = torch.cat([data, act], -1)
-
+        
+        # data = data / torch.norm(data, dim=1).view((-1, 1)) 
+        # norm = torch.norm(x, dim=1, keepdim=True) 
+        # x = x / norm    
         out1 = self.net1(data)
 
         if not self.single:

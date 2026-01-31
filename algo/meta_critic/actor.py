@@ -19,7 +19,7 @@ class SocialActorMetaCriticAWAC(nn.Module):
         activation="leaky_relu",
         integrator=None,
         log_std_max=0,
-        log_std_min=-6,
+        log_std_min=-2,
     ):
         super().__init__()
         self.integrator = integrator
@@ -61,6 +61,8 @@ class SocialActorMetaCriticAWAC(nn.Module):
         if self.integrator != None:
             data = self.integrator(*data)
         x = self.net(data)
+        # norm = torch.norm(x, dim=1, keepdim=True) 
+        # x = x / norm            
         mean = self.mean_linear(x)
 
         log_std = torch.sigmoid(self.log_std_logits(x))
@@ -74,24 +76,31 @@ class SocialActorMetaCriticAWAC(nn.Module):
             data = self.integrator(*data)
         x = self.net(data)
         mean = self.mean_linear(x)
-        mean = torch.tanh(mean) * self.act_max
+        # mean = torch.tanh(mean) * self.act_max
         log_std = torch.sigmoid(self.log_std_logits(x))
         log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
         std = torch.exp(log_std)
         dist = Normal(mean, std)
-        logp_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
-
-        return logp_prob
+        log_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        # log_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+        #     axis=1, keepdim=True
+        # )
+        # log_prob = torch.clamp(log_prob, min=-100.0)
+        return log_prob
 
     def sample(self, data):
         mean, log_std, x= self.forward(data)
         std = log_std.exp()
-        mean = torch.tanh(mean) * self.act_max
+        # mean = torch.tanh(mean) * self.act_max
         dist = Normal(mean, std)
         action = dist.rsample()
         log_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        log_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+            axis=1, keepdim=True
+        )
+        # log_prob = torch.clamp(log_prob, min=-100.0)
         # action = torch.clamp(action, self.act_min, self.act_max)
-        # action = torch.tanh(action) * self.act_max
+        action = torch.tanh(action) * self.act_max
         # mean = torch.clamp(mean, self.act_min, self.act_max)
         return action, log_prob, mean, x
     
@@ -104,9 +113,14 @@ class SocialActorMetaCriticAWAC(nn.Module):
         std = log_std.exp()
         normal = Normal(mean, std)
         pre_tanh_value = normal.rsample()
-        action = torch.tanh(pre_tanh_value) * self.act_max
-
+        
         log_prob = normal.log_prob(pre_tanh_value).sum(dim=-1, keepdim=True)
+        log_prob -= (2 * (np.log(2) - pre_tanh_value - F.softplus(-2 * pre_tanh_value))).sum(
+            axis=1, keepdim=True
+        )
+        # log_prob = torch.clamp(log_prob, min=-100.0)
+
+        action = torch.tanh(pre_tanh_value) * self.act_max
         
         return action, log_prob, mean, std
 
@@ -115,11 +129,16 @@ class SocialActorMetaCriticAWAC(nn.Module):
         out = functional_call(self, params, (data,))
         mean, log_std, _ = out
 
-        std = torch.exp(log_std)
+        # log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
+        std = torch.exp(log_std) 
         dist = Normal(mean, std)
-        logp_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        log_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
+        # log_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+        #     axis=1, keepdim=True
+        # )
+        # log_prob = torch.clamp(log_prob, min=-100.0)
 
-        return logp_prob
+        return log_prob
 class SocialActorMetaCriticCalQL(nn.Module):
     def __init__(
         self,
@@ -130,7 +149,7 @@ class SocialActorMetaCriticCalQL(nn.Module):
         activation="leaky_relu",
         integrator=None,
         log_std_max=0,
-        log_std_min=-6,
+        log_std_min=-2,
     ):
         super().__init__()
         self.integrator = integrator

@@ -24,21 +24,22 @@ class Simulation:
     val_scenario = "circle_crossing"
     test_scenario = "circle_crossing"
     finetune_scenario = "circle_crossing"
-    # train_val_scenario = "square_crossing"
+    # train_scenario = "square_crossing"
     # test_scenario = "square_crossing"
 
-    # rain_val_scenario = "corridor"
+    # train_scenario = "corridor"
     # test_scenario = "corridor"
 
-    # train_val_scenario = "monotonic"
+    # train_scenario = "monotonic"
     # test_scenario = "monotonic"
 
-    # train_val_scenario = "alone"
+    # train_scenario = "alone"
     # test_scenario = "alone"
 
-    square_width = 20
+    square_width = 10
     circle_radius = 4
-    human_num = 5
+    human_num = 10
+    human_nums = [6,7,8,9,10]
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -47,6 +48,7 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
+    test_policy = "orca"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -87,28 +89,33 @@ class Transfunc:
 class Train:
     random_seed = 17
     offline_learning = True
-    lr = 3e-4
-    qf_lr = 3e-4
+    num_tasks = len(Simulation.human_nums)
+    lr = 1e-4
     preliminary_exp_n = 200
     total_it = 10000
+    finetune_total_it = 100
     batch_size = 100
     buffer_capacity = 100000
     actor_update_interval = 2
     target_update_interval = 1
     polyak = 0.995
-    training_alg = "CalQL"
+    training_alg = "AWACMultiTask"
+
+    onpolicy_finetuning = True
+    fintuning_rollout_itr = 5
 
 
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    val_render = False
+    finetune_eval_interval = 1
+    val_render = True
     render = False
-    render_type = "video"
+    render_type = "traj"
 
 
 class Log:
-    wandb_project = "CalQL_training"
+    wandb_project = "AWAC_MultiTask_Training"
     # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True

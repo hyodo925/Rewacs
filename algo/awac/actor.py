@@ -69,17 +69,17 @@ class SocialActorAWAC(nn.Module):
             data = self.integrator(*data)
         x = self.net(data)
         mean = self.mean_linear(x)
-        mean = torch.tanh(mean) * self.act_max
+        # mean = torch.tanh(mean) * self.act_max
         log_std = torch.sigmoid(self.log_std_logits(x))
         # log_std = torch.sigmoid(self.log_std_logits)
         log_std = self.log_std_min + log_std * (self.log_std_max - self.log_std_min)
         std = torch.exp(log_std)
         dist = Normal(mean, std)
         logp_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
-        logp_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
-            axis=1, keepdim=True
-        )
-        logp_prob = torch.clamp(logp_prob, min=-100.0)
+        # logp_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+        #     axis=1, keepdim=True
+        # )
+        logp_prob = torch.clamp(logp_prob, min=-10.0)
         return logp_prob
 
     def sample(self, data):

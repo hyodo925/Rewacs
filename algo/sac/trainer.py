@@ -96,9 +96,9 @@ class SAC:
         )
 
         Q1, Q2 = self.critic(
-            (next_obs.to(self.device), next_r_obs.to(self.device)), action_gen
+            (obs.to(self.device), r_obs.to(self.device)), action_gen
         )
-        Q_min = torch.min(torch.cat((Q1, 2), 1), dim=1)[
+        Q_min = torch.min(torch.cat((Q1, Q2), 1), dim=1)[
             0
         ].unsqueeze(-1)
 

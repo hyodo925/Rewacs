@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import distributions, nn
 from torch.nn.parameter import Parameter
-
+from torch.func import functional_call
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters())
@@ -162,6 +162,56 @@ class RealNVP(nn.Module):
             return seq
 
 
+# class RealNVPActor(nn.Module):
+#     def __init__(
+#         self,
+#         in_channels,
+#         channels,
+#         cond_channels,
+#         n_layers,
+#         encorder,
+#         prior,
+#         action_space=[-1, 1],
+#     ):
+#         super().__init__()
+#         blocks = []
+#         for i in range(n_layers):
+#             blocks.append(
+#                 MetaBlock(
+#                     in_channels,
+#                     channels,
+#                     cond_channels,
+#                 )
+#             )
+#         self.blocks = torch.nn.ModuleList(blocks)
+#         self.encoder = encorder
+#         self.prior = prior
+
+#         self.act_min = action_space[0]
+#         self.act_max = action_space[1]
+
+#     def forward(self, x, obs):
+#         y = self.encoder(*obs)
+#         outputs = []
+#         log_dets = torch.zeros(x.shape[0], device=x.device)
+#         for block in self.blocks:
+#             x, log_det = block(x, y)
+#             log_dets = log_dets + log_det
+#             outputs.append(x)
+#         return x, outputs, log_dets
+
+#     def reverse(self, x, obs, return_sequence=False):
+#         y = self.encoder(*obs)
+#         seq = [x]
+#         for block in reversed(self.blocks):
+#             x = block.reverse(x, y)
+#             seq.append(x)
+
+#         if not return_sequence:
+#             return x
+#         else:
+#             return seq
+
 class RealNVPActor(nn.Module):
     def __init__(
         self,
@@ -190,15 +240,25 @@ class RealNVPActor(nn.Module):
         self.act_min = action_space[0]
         self.act_max = action_space[1]
 
-    def forward(self, x, obs):
-        y = self.encoder(*obs)
-        outputs = []
-        log_dets = torch.zeros(x.shape[0], device=x.device)
-        for block in self.blocks:
-            x, log_det = block(x, y)
-            log_dets = log_dets + log_det
-            outputs.append(x)
-        return x, outputs, log_dets
+    def forward(self, x, obs, mode='forward', return_sequence=False):
+
+        if mode == 'forward':
+            y = self.encoder(*obs)
+            outputs = []
+            log_dets = torch.zeros(x.shape[0], device=x.device)
+            for block in self.blocks:
+                x, log_det = block(x, y)
+                log_dets = log_dets + log_det
+                outputs.append(x)
+            return x, outputs, log_dets
+        
+        elif mode == 'reverse':
+            y = self.encoder(*obs)
+            seq = [x]
+            for block in reversed(self.blocks):
+                x = block.reverse(x, y)
+                seq.append(x)
+            return x if not return_sequence else seq
 
     def reverse(self, x, obs, return_sequence=False):
         y = self.encoder(*obs)
@@ -211,8 +271,19 @@ class RealNVPActor(nn.Module):
             return x
         else:
             return seq
-
-
+        
+    def forward_with_params(self, x, obs, params=None):
+        if params is not None:
+            # kwargs を使って mode='forward' を明示
+            return functional_call(self, params, (x, obs), kwargs={'mode': 'forward'})
+        return self.forward(x, obs, mode='forward')
+    
+    def reverse_with_params(self, x, obs, return_sequence=False, params=None):
+        if params is not None:
+            # kwargs を使って mode='reverse' を指定
+            return functional_call(self, params, (x, obs), kwargs={'mode': 'reverse', 'return_sequence': return_sequence})
+        return self.forward(x, obs, mode='reverse', return_sequence=return_sequence)
+    
 class GEncoder(nn.Module):
     def __init__(self, input_size, rep_size):
         super().__init__()

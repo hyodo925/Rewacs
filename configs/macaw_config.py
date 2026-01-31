@@ -106,14 +106,14 @@ class Train:
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    val_render = False
+    val_render = True
     render = False
     render_type = "traj"
 
 
 class Log:
     wandb_project = "MACAW_training"
-    wandb_mode = "offline"
+    # wandb_mode = "offline"
     wandb_mode = "online"
     wandb = True
     save_model = True

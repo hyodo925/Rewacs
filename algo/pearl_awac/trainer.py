@@ -345,17 +345,15 @@ class PEARLAWAC(nn.Module):
                 # weights = F.softmax(adv / beta, dim=0)
                 weights = self.safe_exp(adv / self.beta)
 
-            loss_act = -(
-                self.model.actor.get_log_prob(
-                    (
-                        obs.to(self.device),
-                        r_obs.reshape(self.batch_size, 1, -1).to(self.device),
-                    ),
-                    act.squeeze().to(self.device),
-                    z=task_z.detach(),
-                )
-                * weights
-            ).mean()
+            log_prob = self.model.actor.get_log_prob(
+                (
+                    obs.to(self.device),
+                    r_obs.reshape(self.batch_size, 1, -1).to(self.device),
+                ),
+                act.squeeze().to(self.device),
+                z=task_z.detach(),
+            )
+            loss_act = -(log_prob * weights).mean()
 
             total_actor_loss += loss_act
                 
@@ -380,6 +378,7 @@ class PEARLAWAC(nn.Module):
                     "loss/actor": la,
                     "loss/critic": lc,
                     "loss/kl": lkl,
+                    "log_prob/actor": log_prob.mean().data.item(),
                 },
                 step=data_for_logging[1],
             )

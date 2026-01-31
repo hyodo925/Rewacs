@@ -311,6 +311,7 @@ class CalQL:
                     "loss/actor": la,
                     "loss/alpha": lalpha,
                     "loss/critic": lc,
+                    "log_prob": log_prob.mean().data.item(),
                 },
                 step=data_for_logging[1],
             )

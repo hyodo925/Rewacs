@@ -213,7 +213,7 @@ trainer = MetaCriticCalQL(
     model=model,
     action_dim=cfg.model.action_dim,
     replay_buffer=buffer,
-    replay_buffer_val=buffer_val,
+    # replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
     meta_critic_optimizer=meta_optimizer,
@@ -230,15 +230,15 @@ expl_logs = expl.exploration_k_ep_orca(
     render=False,
 )
 
-expl_logs_val = expl.exploration_k_ep_orca(
-    buffer=buffer_val,
-    k=cfg.train.preliminary_exp_n,
-    scenario=cfg.sim.val_scenario,
-    human_num=cfg.sim.human_num,
-    policy=cfg.humans.policy,
-    # k=100,
-    render=False,
-)
+# expl_logs_val = expl.exploration_k_ep_orca(
+#     buffer=buffer_val,
+#     k=cfg.train.preliminary_exp_n,
+#     scenario=cfg.sim.val_scenario,
+#     human_num=cfg.sim.human_num,
+#     policy=cfg.humans.policy,
+#     # k=100,
+#     render=False,
+# )
 
 loss_list = []
 

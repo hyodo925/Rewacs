@@ -20,18 +20,17 @@ from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
 from rewacs.envs.utils.robot import Robot
 from rewacs.envs.utils.transformations import GetRobotFrameObs
-from meta_rl_navigation import MetaRLNavigation
-from algo.pearl_awac.eval import eval_policy
+from rl_navigation import RLNavigation
+from utils.evaluation import eval_policy
 from utils.explorer import ExplorerCrowdSim
-from algo.pearl_awac.critic import (
+from utils.models import (
     SocialCritic,
 )
 from utils.state_integrators import (
     EmbeddedGaussianIntegrator,
 )
-from algo.pearl_awac.trainer import PEARLAWAC
-from algo.pearl_awac.context_encoder import ContextGraphEncoder
-from algo.pearl_awac.actor import SocialActorPEARLAWAC
+from algo.awac.trainer import AWACMultiTask
+from algo.awac.actor import SocialActorAWAC
 
 try:
     import wandb
@@ -88,7 +87,7 @@ else:
     print("Using CPU")
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
-config_path = "./configs/pearl_awac_config.py"
+config_path = "./configs/awac_multitask_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
 
 config = importlib.util.module_from_spec(spec)
@@ -103,8 +102,8 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_pearl_awac_training",
-        dir=f"wandb/pearl_awac_training",
+        name=f"{start_time_log}_awac_multitask_training",
+        dir=f"wandb/awac_multitask_training",
     )
     run.config.update(config.b.to_wandb_dict(cfg))
 
@@ -133,6 +132,19 @@ if cfg.log.wandb:
 
 seed_all(cfg.train.random_seed)
 
+if cfg.log.wandb:
+    log_dir = run.dir # WandBを使っている場合はそのディレクトリ内
+else:
+    log_dir = f"logs/awac/{start_time_log}"
+
+os.makedirs(log_dir, exist_ok=True)
+
+# 訓練ログ用CSV
+train_log_csv = os.path.join(log_dir, "train_log.csv")
+with open(train_log_csv, 'w', newline='') as f:
+    writer = csv.writer(f)
+    writer.writerow(["step", "critic_loss", "actor_loss"])
+
 ##################################################################################
 # load env
 env, robot = define_env(debug=True, config=config)
@@ -158,8 +170,8 @@ actor_integrator = EmbeddedGaussianIntegrator(
     enc_hdims=cfg.model.actor_integrator_enc_hdims,
 )
 
-actor = SocialActorPEARLAWAC(
-    cfg.model.projection_dim + cfg.model.latent_dim,
+actor = SocialActorAWAC(
+    cfg.model.projection_dim,
     cfg.model.action_dim,
     action_space=cfg.model.action_space,
     h_dims=cfg.model.actor_h_dims,
@@ -174,21 +186,14 @@ critic_integrator = EmbeddedGaussianIntegrator(
 )
 
 critic = SocialCritic(
-    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.latent_dim,
+    cfg.model.projection_dim + cfg.model.action_dim,
     1,
     h_dims=cfg.model.critic_h_dims,
     integrator=critic_integrator,
     single=False,
 )
 
-context_encoder = ContextGraphEncoder(    
-    cfg.model.projection_dim + cfg.model.action_dim + cfg.model.reward_dim,
-    2 *cfg.model.latent_dim,
-    h_dims=cfg.model.critic_h_dims,
-    integrator=critic_integrator,
-    single=False,)
-
-model = MetaRLNavigation(actor=actor, critic=critic, context_encoder=context_encoder)
+model = RLNavigation(actor=actor, critic=critic)
 
 expl = ExplorerCrowdSim(
     env=env,
@@ -207,20 +212,17 @@ use_rule_based = False
 # tbar = trange(args.total_it)
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 
-context_optimizer = torch.optim.Adam(model.context_encoder.parameters(), lr=cfg.train.lr)
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 
-
-
 tasks = []
-human_nums = cfg.train.human_nums
+human_nums = cfg.sim.human_nums
 for i in range(cfg.train.num_tasks):
     buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
     expl_logs = expl.exploration_k_ep_orca(
         buffer=buffer,
         human_num=human_nums[i],
-        scenario="square_crossing",
+        scenario=cfg.sim.train_scenario,
         k=cfg.train.preliminary_exp_n,
         policy=cfg.humans.policy,
         # k=100,
@@ -228,15 +230,12 @@ for i in range(cfg.train.num_tasks):
     )
     tasks.append(buffer)
 
-    
-trainer = PEARLAWAC(
+trainer = AWACMultiTask(
     model=model,
     tasks=tasks,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
-    context_optimizer=context_optimizer,
     batch_size=cfg.train.batch_size,
-    latent_dim=cfg.model.latent_dim
 )
 
 loss_list = []
@@ -250,6 +249,7 @@ loss_list = []
 #     render=False,
 #     print_results=True
 # )
+
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
@@ -260,9 +260,6 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                 expl_logs = expl.exploration_k_ep(
                     buffer=buffer,
                     model=model,
-                    scenario=cfg.sim.train_scenario,
-                    human_num=cfg.sim.human_num,
-                    policy=cfg.humans.policy,
                     pbar=pbar,
                     render=False,
                 )
@@ -281,10 +278,15 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                         step=i + 1,
                     )
 
-        trainer.update(
-            # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
+        lc, la = trainer.update(
+            update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
+
+        val_la = la if la is not None else ""
+        with open(train_log_csv, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([i + 1, lc, val_la])
 
         # total_it += 1
         if ((i + 1) % cfg.train.target_update_interval) == 0:
@@ -294,11 +296,10 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
             val_logs = eval_policy(
                 eval_env=env,
                 model=model,
-                trainer=trainer,
                 transfunc=transfunc,
                 scenario=cfg.sim.val_scenario,
                 human_num=cfg.sim.human_num,
-                policy=cfg.humans.policy,
+                policy=cfg.humans.test_policy,
                 convert_action=convert_action,
                 eval_episodes=env.case_size["val"],
                 phase="val",
@@ -356,11 +357,10 @@ print(f"The best model number is {best_step_num}")
 test_logs = eval_policy(
     eval_env=env,
     model=model,
-    trainer=trainer,
     transfunc=transfunc,
-    scenario=cfg.sim.val_scenario,
+    scenario=cfg.sim.test_scenario,
     human_num=cfg.sim.human_num,
-    policy=cfg.humans.policy,
+    policy=cfg.humans.test_policy,
     convert_action=convert_action,
     eval_episodes=env.case_size["test"],
     phase="test",
@@ -373,7 +373,6 @@ test_logs = eval_policy(
 
 if cfg.log.wandb:
     # run.log({"Validation Table": val_table})
-
     test_log_columns = ["bset_step_num"] + results_log_columns
     test_log_data = [best_step_num] + list(test_logs)
     test_table = wandb.Table(columns=test_log_columns)

@@ -8,7 +8,7 @@ import numpy as np
 import torch
 from numpy import average
 from tqdm import tqdm
-
+import os
 from rewacs.envs.utils.info import Collision, Discomfort, ReachGoal, Timeout
 from rewacs.envs.utils.state import JointState
 
@@ -25,13 +25,16 @@ def eval_policy(
     model,
     trainer,
     transfunc,
+    scenario,
+    human_num,
+    policy,
     convert_action,
     discount=0.9,
     render=False,
     render_type="",
     path=None,
     eval_episodes=10,
-    scenario="test",
+    phase="test",
     random_p_num=False,
     p_range=(1, 11),
     ax=None,
@@ -62,7 +65,15 @@ def eval_policy(
         if random_p_num:
             p_num = np.random.randint(*p_range)
             eval_env.set_human_num(p_num)
-        robot_state, human_state = eval_env.reset(scenario)
+
+        eval_env.set_human_num(human_num)
+        if phase == "val":
+            eval_env.set_val_scenario(scenario)
+        elif phase == "test":
+            eval_env.set_test_scenario(scenario)
+        eval_env.set_policy(policy)
+
+        robot_state, human_state = eval_env.reset(phase)
         done = False
         robot_obs, humans_obs = transfunc(
             robot_state,
@@ -124,15 +135,17 @@ def eval_policy(
             sum_rewards += reward
             rewards.append(reward)
             if render and done:
-                if render_type == "video":
-                    eval_env.render("video", path + "/" + str(i) + ".mp4")
-                elif render_type == "traj":
-                    if path:
-                        eval_env.render("traj", path + "/" + str(i) + ".png")
+                os.makedirs(path, exist_ok=True)
+                if (i+1) % 10 == 0 or i == 0:
+                    if render_type == "video":
+                        eval_env.render("video", path + "/" + str(i+1) + ".mp4")
+                    elif render_type == "traj":
+                        if path:
+                            eval_env.render("traj", path + "/" + str(i+1) + ".png")
+                        else:
+                            eval_env.render("traj")
                     else:
-                        eval_env.render("traj")
-                else:
-                    eval_env.render()
+                        eval_env.render()
             # if isinstance(info, Danger):
             if isinstance(info, Discomfort):
                 too_close += 1

@@ -224,7 +224,7 @@ def eval_policy(
                     "Scenario : "
                     + str(eval_env.test_scenario)
                     + "-"
-                    + str(scenario)
+                    + str(phase)
                     + "\n"
                 )
                 f.write("----------------------------" + "\n")
@@ -325,6 +325,7 @@ def eval_policy_with_flow(
             switching_necessity = flow.switching_necessity(
                 humans_obs.unsqueeze(0).to(flow.device)
             )
+
             if switching_necessity:
                 # if flow.detect_anomaly(
                 #     (

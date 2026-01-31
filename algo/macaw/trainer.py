@@ -363,4 +363,28 @@ class MACAW:
                 step=data_for_logging[1],
             )
 
-                
+    def step(self, ):
+        for train_task_idx, task in enumerate(self.tasks):
+            sample = task.sample(self.batch_size)
+            sample_val = task.sample(self.batch_size)           
+            # self._env.set_task_idx(train_task_idx)
+            obs, next_obs, r_obs, next_r_obs, act, rwd, mc_returns, done = list(sample.values())
+            vf = self.model.value
+            # vf.train()
+            vf_target = deepcopy(vf)
+            loss, value_inner, mc_inner, mc_std_inner = self.value_function_loss_on_batch(self.model.value, obs, r_obs, mc_returns, inner=True, task_idx=train_task_idx, target=vf_target)#, iweights=iweights_no_action_)
+            loss.backward()
+            grad_value = self.update_model(self.model.value, self.actor_optimizer, clip=self._grad_clip)
+            if self.q:
+                qf = self.model.critic
+                qf.train()
+                qf_target = deepcopy(qf)
+                loss  = self.q_function_loss_on_batch(self.model.critic, obs, r_obs, act, mc_returns, inner=True, task_idx=train_task_idx)#, iweights=iweights_no_action_)
+                loss.backward()
+                grad_q = self.update_model(self.model.critic, self.critic_optimizer, clip=self._grad_clip)
+            # self.actor_optimizer.zero_grad()
+            loss, adv, weights, adv_loss = self.adaptation_policy_loss_on_batch(self.model.actor, self.model.critic, self.model.value, obs, r_obs, act, mc_returns, train_task_idx, inner=True)
+            loss.backward()
+            grad_actor = self.update_model(self.model.actor, self.actor_optimizer, clip=self._grad_clip)
+
+        return self.model

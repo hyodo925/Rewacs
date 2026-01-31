@@ -117,6 +117,22 @@ class GraphSituationFlow(nn.Module):
             )
         return switching_score
 
+    def get_switching_score_dim(self, data):
+        z, _ = self.forward(data)
+        if self.threshold_type == "mean":
+            dims = tuple(range(1, z.ndim))
+            switching_score = torch.mean(z**2, dim=dims)
+            # switching_score = torch.mean(torch.sum(0.5 * torch.sum(z**2, dim=(2,)), dim=(1,))) / (z.shape[1])
+        elif self.threshold_type == "sum":
+            dims = tuple(range(1, z.ndim))
+            switching_score = torch.mean(torch.sum(0.5 * torch.sum(z**2, dim=(2,)), dim=(1,)), dim=dims)
+        elif self.threshold_type == "max":
+            dims = tuple(range(1, z.ndim))
+            switching_score = torch.max(
+                torch.mean(torch.mean(z**2, dim=1), dim=dims)
+            )
+        return switching_score
+    
     def set_switching_threshold(self, data):
         with torch.no_grad():
             # anomaly_score = self.get_anomaly_score(data)

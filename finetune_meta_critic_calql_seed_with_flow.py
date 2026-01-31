@@ -125,8 +125,8 @@ seed_all(cfg.train.random_seed)
 #################################
 # Settings
 # run_dir = "wandb/meta_critic_awac_training/wandb/run-20260122_134225-chfd9otf"
-run_dir = "wandb/meta_critic_calql_training/wandb/run-20260124_154534-fjncpn7y" #penaltimate normalization
-
+# run_dir = "wandb/meta_critic_calql_training/wandb/run-20260124_154534-fjncpn7y" #penaltimate normalization
+run_dir = "wandb/meta_critic_calql_training/wandb/run-20260127_203626-qjzst9s2" #latest
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
 ############# flow model ####################
@@ -233,7 +233,7 @@ trainer = MetaCriticCalQL(
     model=model,
     action_dim=cfg.model.action_dim,
     replay_buffer=buffer,
-    replay_buffer_val=buffer_val,
+    # replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
     meta_critic_optimizer=meta_optimizer,
@@ -250,16 +250,32 @@ flow = GraphSituationFlow(
 flow.load_model(flow_model_path)
 flow.to(device)
 
-if not cfg.train.onpolicy_finetuning:
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        k=cfg.train.preliminary_exp_n,
-        scenario=cfg.sim.train_scenario,
-        human_num=cfg.sim.human_num,
-        policy=cfg.humans.policy,
-        # k=100,
-        render=False,
-    )
+# if not cfg.train.onpolicy_finetuning:
+#     expl_logs = expl.exploration_k_ep_orca(
+#         buffer=buffer,
+#         k=cfg.train.preliminary_exp_n,
+#         scenario=cfg.sim.train_scenario,
+#         human_num=cfg.sim.human_num,
+#         policy=cfg.humans.policy,
+#         # k=100,
+#         render=False,
+#     )
+
+if cfg.train.pre_explor:
+    with tqdm(range(cfg.train.pre_explor_itr)) as pbar:
+        for i in enumerate(pbar):
+            expl_logs = expl.exploration_k_ep_with_flow_mode(
+                buffer=buffer,
+                model=model,
+                flow=flow,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.finetune_policy,
+                pbar=pbar,
+                mode=cfg.train.finetune_mode,
+                render=False,
+            )
+
 
 loss_list = []
 val_logs = eval_policy(

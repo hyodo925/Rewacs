@@ -129,8 +129,10 @@ seed_all(cfg.train.random_seed)
 #################################
 # Settings
 # run_dir = "wandb/meta_critic_awac_training/wandb/run-20260122_134225-chfd9otf"
-run_dir = "wandb/meta_critic_awac_training/wandb/run-20260124_150338-fmaruvat" #penaltimate normalization
-
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260124_150338-fmaruvat" #penaltimate normalization
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260125_181949-4vs04hcf" #square-square
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260126_152818-39r7avq4" #square-circle
+run_dir = "wandb/meta_critic_awac_training/wandb/run-20260127_025135-39cxeln9" #latest
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
 
 ############# flow model ####################
@@ -226,15 +228,6 @@ meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.l
 model.load_model(model_path)
 model.to(device)
 
-trainer = MetaCriticAWAC(
-    model=model,
-    replay_buffer=buffer,
-    replay_buffer_val=buffer_val,
-    actor_optimizer=actor_optimizer,
-    critic_optimizer=critic_optimizer,
-    meta_critic_optimizer=meta_optimizer,
-    batch_size=cfg.train.batch_size,
-)
 
 ######### flow ########
 flow = GraphSituationFlow(
@@ -247,16 +240,42 @@ flow = GraphSituationFlow(
 flow.load_model(flow_model_path)
 flow.to(device)
 
-if not cfg.train.onpolicy_finetuning:
-    expl_logs = expl.exploration_k_ep_orca(
-        buffer=buffer,
-        k=cfg.train.preliminary_exp_n,
-        scenario=cfg.sim.train_scenario,
-        human_num=cfg.sim.human_num,
-        policy=cfg.humans.policy,
-        # k=100,
-        render=False,
-    )
+trainer = MetaCriticAWAC(
+    model=model,
+    flow=flow,
+    replay_buffer=buffer,
+    # replay_buffer_val=buffer_val,
+    actor_optimizer=actor_optimizer,
+    critic_optimizer=critic_optimizer,
+    meta_critic_optimizer=meta_optimizer,
+    batch_size=cfg.train.batch_size,
+)
+
+
+# if not cfg.train.onpolicy_finetuning:
+#     expl_logs = expl.exploration_k_ep_orca(
+#         buffer=buffer,
+#         k=cfg.train.preliminary_exp_n,
+#         scenario=cfg.sim.train_scenario,
+#         human_num=cfg.sim.human_num,
+#         policy=cfg.humans.policy,
+#         # k=100,
+#         render=False,
+#     )
+if cfg.train.pre_explor:
+    with tqdm(range(cfg.train.pre_explor_itr)) as pbar:
+        for i in enumerate(pbar):
+            expl_logs = expl.exploration_k_ep_with_flow(
+                buffer=buffer,
+                model=model,
+                flow=flow,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.finetune_policy,
+                # mode=cfg.train.finetune_mode,
+                pbar=pbar,
+                render=False,
+            )
 
 loss_list = []
 val_logs = eval_policy(
@@ -299,7 +318,7 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
 
             if not cfg.train.offline_learning:
                 for j in range(cfg.train.fintuning_rollout_itr):
-                    expl_logs = expl.exploration_k_ep_with_flow_mode(
+                    expl_logs = expl.exploration_k_ep_with_flow(
                         buffer=buffer,
                         model=model,
                         flow=flow,
@@ -307,7 +326,7 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
                         human_num=cfg.sim.human_num,
                         policy=cfg.humans.finetune_policy,
                         pbar=pbar,
-                        mode=cfg.train.finetune_mode,
+                        # mode=cfg.train.finetune_mode,
                         render=False,
                     )
 

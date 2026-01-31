@@ -219,7 +219,7 @@ meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.l
 trainer = MetaCriticAWAC(
     model=model,
     replay_buffer=buffer,
-    replay_buffer_val=buffer_val,
+    # replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
     meta_critic_optimizer=meta_optimizer,
@@ -236,19 +236,20 @@ expl_logs = expl.exploration_k_ep_orca(
     render=False,
 )
 
-expl_logs_val = expl.exploration_k_ep_orca(
-    buffer=buffer_val,
-    k=cfg.train.preliminary_exp_n,
-    scenario=cfg.sim.val_scenario,
-    human_num=cfg.sim.human_num,
-    policy=cfg.humans.policy,
-    # k=100,
-    render=False,
-)
+# expl_logs_val = expl.exploration_k_ep_orca(
+#     buffer=buffer_val,
+#     k=cfg.train.preliminary_exp_n,
+#     scenario=cfg.sim.val_scenario,
+#     human_num=cfg.sim.human_num,
+#     policy=cfg.humans.policy,
+#     # k=100,
+#     render=False,
+# )
 
 loss_list = []
-
-
+wandb.watch(model.actor, log="all", log_freq=100)
+wandb.watch(model.critic, log="all", log_freq=100)
+wandb.watch(model.meta_critic, log="all", log_freq=100)
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
@@ -283,6 +284,8 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
         trainer.update(
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
+
+        trainer.visualize_computational_graph()
 
         # total_it += 1
         if ((i + 1) % cfg.train.target_update_interval) == 0:
