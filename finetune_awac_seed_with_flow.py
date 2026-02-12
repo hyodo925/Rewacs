@@ -92,7 +92,9 @@ else:
 ############### policy model ##################
 # Settings
 # run_dir = "wandb/awac_training/wandb/run-20260124_141502-b6znpdu2"
-run_dir = "wandb/awac_training/wandb/run-20260127_123238-tac0gepj"
+# run_dir = "wandb/awac_training/wandb/run-20260209_103308-pvj5m5so" #Weight Clipping zeta=3.0
+run_dir = "wandb/awac_training/wandb/run-20260209_154749-v6xtokdu"#Weight Clipping zeta=0.5
+# run_dir = "wandb/awac_training/wandb/run-20260127_123238-tac0gepj"
 config_path = os.path.join("configs/awac_with_flow_config.py")
 
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
@@ -224,7 +226,12 @@ critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 model.load_model(model_path)
 model.to(device)
+# for param in model.actor.parameters():
+#     param.requires_grad = True
 
+# if model.actor.integrator is not None:
+#     for param in model.actor.integrator.parameters():
+#         param.requires_grad = False
 
 trainer = AWAC(
     model=model,

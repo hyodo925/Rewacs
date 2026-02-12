@@ -27,7 +27,7 @@ from utils.explorer import ExplorerCrowdSim
 from algo.meta_critic.critic import SocialCritic
 from algo.meta_critic.integrator import EmbeddedGaussianIntegrator
 from algo.meta_critic.actor import SocialActorMetaCriticFQL
-from algo.meta_critic.trainer import MetaCriticFQL
+from algo.meta_critic.trainer_backup import MetaCriticFQL
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 from algo.meta_critic.models import BC_flow
 try:

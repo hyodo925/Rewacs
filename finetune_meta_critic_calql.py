@@ -31,7 +31,7 @@ from algo.meta_critic.integrator import (
     EmbeddedGaussianIntegratorRepeat
 )
 from algo.meta_critic.actor import SocialActorMetaCriticCalQL
-from algo.meta_critic.trainer import MetaCriticCalQL
+from algo.meta_critic.trainer_backup import MetaCriticCalQL
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:

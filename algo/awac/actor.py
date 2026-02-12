@@ -76,10 +76,10 @@ class SocialActorAWAC(nn.Module):
         std = torch.exp(log_std)
         dist = Normal(mean, std)
         logp_prob = dist.log_prob(action).sum(axis=-1, keepdim=True)
-        # logp_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
-        #     axis=1, keepdim=True
-        # )
-        logp_prob = torch.clamp(logp_prob, min=-10.0)
+        logp_prob -= (2 * (np.log(2) - action - F.softplus(-2 * action))).sum(
+            axis=1, keepdim=True
+        )
+        logp_prob = torch.clamp(logp_prob, min=-100.0)
         return logp_prob
 
     def sample(self, data):

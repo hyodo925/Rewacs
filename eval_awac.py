@@ -77,11 +77,11 @@ def define_env(
 #################################
 # Settings
 run_dir = "wandb/awac_training/wandb/run-20260113_130327-zgc57h94"
-run_dir = "wandb/awac_training/wandb/run-20260127_054147-ayzag4yg" #6humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_054715-o7qgqkmn" #7humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_055100-e33rk7ud" #8humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_055427-agw3x8if" #9humans square
-run_dir = "wandb/awac_training/wandb/run-20260127_055759-s33365br" #10humans square
+# run_dir = "wandb/awac_training/wandb/run-20260127_054147-ayzag4yg" #6humans square
+# run_dir = "wandb/awac_training/wandb/run-20260127_054715-o7qgqkmn" #7humans square
+# run_dir = "wandb/awac_training/wandb/run-20260127_055100-e33rk7ud" #8humans square
+# run_dir = "wandb/awac_training/wandb/run-20260127_055427-agw3x8if" #9humans square
+# run_dir = "wandb/awac_training/wandb/run-20260127_055759-s33365br" #10humans square
 
 config_path = os.path.join("configs/awac_config.py")
 
@@ -152,7 +152,8 @@ critic = SocialCritic(
 )
 
 model = RLNavigation(actor=actor, critic=critic)
-
+model.load_model(model_path)
+model.to(device=device)
 # jsd = float("inf")
 
 use_rule_based = False
@@ -164,6 +165,8 @@ buffer.extend(range(5000))
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 
+
+
 trainer = AWAC(
     model=model,
     replay_buffer=buffer,
@@ -172,7 +175,7 @@ trainer = AWAC(
     batch_size=cfg.train.batch_size,
 )
 
-model.load_model(model_path)
+
 
 loss_list = []
 
@@ -206,6 +209,9 @@ eval_policy(
     eval_env=env,
     model=model,
     transfunc=transfunc,
+    scenario=cfg.sim.val_scenario,
+    human_num=cfg.sim.human_num,
+    policy=cfg.humans.test_policy,
     convert_action=convert_action,
     eval_episodes=env.case_size["test"],
     phase="test",

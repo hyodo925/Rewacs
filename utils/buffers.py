@@ -1,8 +1,9 @@
 import numpy as np
 import torch
 import random
-from more_itertools import chunked
 from torch.utils.data import Dataset
+import torch
+from torchrl.data.replay_buffers.samplers import PrioritizedSampler
 
 
 def trajectory_collate(Trajectory):
@@ -169,3 +170,24 @@ class ReplayMemory(Dataset):
 
     # def set_data(self, data):
     #     self.memory = data
+
+
+class ODPRSampler(PrioritizedSampler):
+    def __init__(self, capacity, alpha=1.0, beta=0.4):
+        # ロジック側で重みを調整済みのため、alpha=1.0 を推奨（重みをそのまま確率にするため）
+        super().__init__(max_capacity=capacity, alpha=alpha, beta=beta)
+
+    def apply_odpr_weights(self, weights, memory_size):
+        epsilon = 1e-37
+        weights = torch.where(torch.abs(weights) < epsilon, 
+                             torch.tensor(0.0, dtype=torch.float64), 
+                             weights)
+        
+        std = torch.std(weights, unbiased=False)
+        scale = 2 / std if std > 0 else 1.0
+        
+        if scale > 1:
+            weights = torch.clamp(scale * (weights - 1) + 1, min=0.1)
+            weights = weights / (torch.nansum(weights) + epsilon) * memory_size
+        indices = torch.arange(len(weights))
+        self.update_priority(indices, weights.float())

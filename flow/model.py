@@ -172,10 +172,11 @@ class GraphSituationFlow(nn.Module):
         else:
             return torch.mean(0.5 * torch.sum(z**2, dim=(1,)) - log_det_j) / (z.shape[1])
     
-    def plot_log_prob_comparison(self, model, train_loader, ood_loader,  device, save_path=None):
+    def plot_log_prob_comparison(self, model, train_loader, ood_loader,  ood_loader2, device, save_path=None):
         model.eval()
         train_scores = []
         ood_scores = []
+        ood_scores2 = []
         with torch.no_grad():
             for i in range(100):
                 data = train_loader.sample(100)["humans_obs"].to(device)
@@ -187,11 +188,17 @@ class GraphSituationFlow(nn.Module):
                 scores = model.get_switching_score(data)
                 ood_scores.append(scores.item())
 
+            for i in range(100):
+                data = ood_loader2.sample(100)["humans_obs"].to(device)
+                scores = model.get_switching_score(data)
+                ood_scores2.append(scores.item())
+
         plt.figure(figsize=(8, 5))
         sns.set_style("darkgrid")
 
-        sns.histplot(train_scores, color="gray", label="Train (ID)", kde=True, stat="density", alpha=0.6)
-        sns.histplot(ood_scores, color="crimson", label="Test (OOD)", kde=True, stat="density", alpha=0.6)
+        sns.histplot(train_scores, color="gray", label="square_5_orca", kde=True, stat="density", alpha=0.6)
+        sns.histplot(ood_scores, color="crimson", label="circle_5_socialforce", kde=True, stat="density", alpha=0.6)
+        sns.histplot(ood_scores2, color="forestgreen", label="circle_10_socialforce", kde=True, stat="density", alpha=0.6)
         plt.axvline(self.theta.item(),color="blue",linestyle="--",linewidth=2,label=f"Switching threshold = {self.theta.item():.4f}")
         plt.xlabel("Switching score τ", fontsize=14)
         plt.ylabel("Density", fontsize=14)

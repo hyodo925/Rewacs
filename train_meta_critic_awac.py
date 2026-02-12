@@ -219,7 +219,7 @@ meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.l
 trainer = MetaCriticAWAC(
     model=model,
     replay_buffer=buffer,
-    # replay_buffer_val=buffer_val,
+    replay_buffer_val=buffer_val,
     actor_optimizer=actor_optimizer,
     critic_optimizer=critic_optimizer,
     meta_critic_optimizer=meta_optimizer,
@@ -282,10 +282,11 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                     )
 
         trainer.update(
+            # update_actor=True,
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
-        trainer.visualize_computational_graph()
+        # trainer.visualize_computational_graph()
 
         # total_it += 1
         if ((i + 1) % cfg.train.target_update_interval) == 0:

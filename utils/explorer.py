@@ -239,6 +239,8 @@ class ExplorerCrowdSim:
         self,
         buffer,
         model=None,
+        human_num=5, 
+        scenario="square_crossing", 
         k=1,
         epsilon=0.5,
         render=False,
@@ -272,6 +274,9 @@ class ExplorerCrowdSim:
                 d_o = self.obs_dim * self.env.human_num
             d_ro = self.r_obs_dim
             d_s = self.state_dim * self.env.human_num
+
+            self.env.set_human_num(human_num)
+            self.env.set_train_scenario(scenario)
 
             # Temporary buffer list
             next_obs = []
@@ -649,6 +654,7 @@ class ExplorerCrowdSim:
         collision_cases = []
         timeout_cases = []
         switching_list = []
+        collected_data = []
 
         ###############################
         for _ in range(k):
@@ -812,6 +818,7 @@ class ExplorerCrowdSim:
 
             # if isinstance(info, ReachGoal):
             if isinstance(info, ReachGoal) or isinstance(info, Collision):
+                episode_samples = []
                 for i in range(len(obs)):
                     # test = v[i]
                     # yy = r_obs[i]
@@ -827,6 +834,8 @@ class ExplorerCrowdSim:
                         }
                     )
                     buffer.add(samples)
+                    episode_samples.append(samples)
+                collected_data.append(episode_samples)
         if pbar:
             pbar.set_postfix(Reward=str(sum_rewards / k))
 
@@ -843,6 +852,8 @@ class ExplorerCrowdSim:
             else self.env.time_limit
         )
 
+        torch.save(collected_data, 'collected_trajectories.pth')
+        
         return (
             avg_reward,
             avg_cdr,

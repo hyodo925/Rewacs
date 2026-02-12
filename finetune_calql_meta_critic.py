@@ -27,7 +27,7 @@ from algo.calql.explorer import ExplorerCrowdSim
 from algo.meta_critic.critic import SocialCritic
 from algo.meta_critic.integrator import EmbeddedGaussianIntegrator, EmbeddedGaussianIntegratorRepeat
 from algo.meta_critic.actor import SocialActorMetaCriticCalQL
-from algo.meta_critic.trainer_hotplug import MetaCriticCalQL
+from algo.meta_critic.trainer import MetaCriticCalQL
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 from flow.model import GraphSituationFlow
 
@@ -90,10 +90,11 @@ else:
 ############### policy model ##################
 # Settings
 # run_dir = "wandb/awac_training/wandb/run-20260124_141502-b6znpdu2"
-run_dir = "wandb/calql_training/wandb/run-20260129_201909-lhth0c89"
+# run_dir = "wandb/calql_training/wandb/run-20260129_201909-lhth0c89"
+run_dir = "wandb/calql_training/wandb/run-20260206_184816-i95dp2fb"
 config_path = "./configs/meta_critic_calql_with_flow_config.py"
 
-model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
+model_path = os.path.join(run_dir, "files/trained_models/model_10000.pth")
 #################################
 
 ############# flow model ####################
@@ -216,6 +217,13 @@ model = MetaRLNavigation(actor=actor, critic=critic, meta_critic=meta_critic)
 checkpoint = torch.load(model_path, map_location=device)
 model.load_state_dict(checkpoint, strict=False)
 model.to(device)
+
+for param in model.actor.parameters():
+    param.requires_grad = True
+
+if model.actor.integrator is not None:
+    for param in model.actor.integrator.parameters():
+        param.requires_grad = False
 # updater = VirtualActorUpdater()
 # updater = Hot_Plug()
 expl = ExplorerCrowdSim(
@@ -350,7 +358,7 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
         with torch.no_grad():
             # if i < 1000:
             
-            if not cfg.train.offline_learning:
+            if cfg.train.onpolicy_finetuning :
                 for j in range(cfg.train.fintuning_rollout_itr):
                     expl_logs = expl.exploration_k_ep_with_flow_mode(
                         buffer=buffer,
@@ -389,7 +397,7 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
                         step=i + 1,
                     )
 
-        trainer.finetune(
+        trainer.update(
             # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             current_it=i,
             total_it=cfg.train.finetune_total_it,

@@ -36,6 +36,7 @@ class SocialCritic(nn.Module):
         return net
 
     def forward(self, obs, act=None):
+        #For calql method
         if act is not None and act.ndim == 3:
             obs = extend_and_repeat(obs, dim=1, repeat=act.shape[1])
         if self.integrator != None:
@@ -43,10 +44,7 @@ class SocialCritic(nn.Module):
 
         if not self.single:
             data = torch.cat([data, act], -1)
-        
-        # data = data / torch.norm(data, dim=1).view((-1, 1)) 
-        # norm = torch.norm(x, dim=1, keepdim=True) 
-        # x = x / norm    
+    
         out1 = self.net1(data)
 
         if not self.single:

@@ -4,10 +4,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
-from .virtual_updater import VirtualActorUpdater
+from .virtual_updater import VirtualActorUpdater, Hot_Plug
 import higher
 from torchviz import make_dot
-
+from .utils import (
+    get_grad_norm, 
+    get_weight_norm, 
+    get_abs_approximate_rank, 
+    get_approximate_rank, 
+    get_dormant_units_ratio, 
+    get_effective_rank,
+    get_kl_divergence,
+    get_mmd,
+    get_wasserstein_dist,
+    get_grad_direction_stats
+    )
+from .weight_clipping import WeightClippingAdam
 
 def get_grad_norms(model, prefix):
     metrics = {}
@@ -19,6 +31,84 @@ def get_grad_norms(model, prefix):
             total_norm += param_norm ** 2
     metrics[f"grads/{prefix}_total_norm"] = total_norm ** 0.5
     return metrics
+
+def analyze_leaf_nodes(loss_tensor, model, name="Loss"):
+    """
+    計算グラフを遡り、葉ノードがモデルのどのパラメータか特定する
+    """
+    # モデルの全パラメータのアドレスを辞書化しておく
+    param_map = {p.data_ptr(): name for name, p in model.named_parameters()}
+    
+    leaves = set()
+    visited = set()
+
+    def find_leaves(grad_fn):
+        if grad_fn is None or grad_fn in visited:
+            return
+        visited.add(grad_fn)
+        
+        if hasattr(grad_fn, 'next_functions'):
+            for next_f, _ in grad_fn.next_functions:
+                if next_f is not None:
+                    # 勾配が蓄積されるノード(葉)を確認
+                    if "AccumulateGrad" in str(next_f):
+                        if hasattr(next_f, 'variable'):
+                            leaves.add(next_f.variable)
+                    find_leaves(next_f)
+
+    print(f"\n=== Graph Analysis for: {name} ===")
+    find_leaves(loss_tensor.grad_fn)
+    
+    if not leaves:
+        print("❌ 葉ノードが一つも見つかりませんでした。")
+    else:
+        for i, leaf in enumerate(leaves):
+            ptr = leaf.data_ptr()
+            # モデルのパラメータか、それ以外のテンソル（中間結果など）か
+            param_name = param_map.get(ptr, "Unknown (Temporary Tensor or Replaced Param)")
+            
+            print(f"Leaf {i+1}:")
+            print(f"  - Name: {param_name}")
+            print(f"  - Size: {list(leaf.size())}")
+            print(f"  - Requires_grad: {leaf.requires_grad}")
+            
+            # ここが重要：履歴(grad_fn)の有無
+            if leaf.grad_fn is not None:
+                print(f"  - 🔗 履歴あり: grad_fn={type(leaf.grad_fn).__name__}")
+                print(f"    (メタ学習が成功していれば、ここに演算名が出ます)")
+            else:
+                print(f"  - 🍃 履歴なし: 純粋な葉ノードです")
+    print("==========================================\n")
+
+def print_grad_graph(fn, indent=0, visited=None):
+    if visited is None:
+        visited = set()
+    
+    if fn is None:
+        return
+    
+    # 同じノードを何度も表示しない（グラフが合流するため）
+    node_id = id(fn)
+    already_visited = node_id in visited
+    visited.add(node_id)
+    
+    # インデントと演算名の表示
+    space = "  " * indent
+    node_name = str(fn)
+    
+    # 特徴的なノードに色付け（文字情報）
+    marker = ""
+    if "AccumulateGrad" in node_name:
+        marker = " <--- [Leaf Parameter]"
+    elif "Meta" in node_name:
+        marker = " <--- [!! Meta-Critic Related !!]"
+    
+    print(f"{space}|-- {node_name.split(' at ')[0]}{marker}{' (already printed)' if already_visited else ''}")
+    
+    # 再帰的に親（計算の元となった演算）を辿る
+    if not already_visited and hasattr(fn, 'next_functions'):
+        for next_f, _ in fn.next_functions:
+            print_grad_graph(next_f, indent + 1, visited)
 
 class MetaCriticAWAC:
     def __init__(
@@ -58,6 +148,15 @@ class MetaCriticAWAC:
         self.normality_weight = 0.5
         self.handmade_weights = False
 
+        #Weight Clipping
+        # self.lr = 3e-4
+        # weight_clipping = 0.5
+        # clip_last_layer = 1
+        # # self.weight_clipping = WeightClippingAdam()
+        # self.actor_optimizer = WeightClippingAdam(self.model.actor.parameters(), lr=self.lr, eps=1e-5, zeta=weight_clipping, clip_last_layer=clip_last_layer)
+        # self.critic_optimizer = WeightClippingAdam(self.model.critic.parameters(), lr=self.lr, eps=1e-5, zeta=weight_clipping, clip_last_layer=clip_last_layer)
+
+
     def safe_exp(self, x):
         return torch.where(x < 50, torch.exp(x), x)
 
@@ -70,6 +169,12 @@ class MetaCriticAWAC:
         # sample_val = self.replay_buffer_val.sample(self.batch_size)
         sample_val = self.replay_buffer.sample(self.batch_size)
         obs_val, next_obs_val, r_obs_val, next_r_obs_val, act_val, rwd_val, done_val = list(sample_val.values())
+
+        with torch.no_grad():
+            old_mean, old_log_std, _ = self.model.actor((obs.to(self.device), r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
+            c_feats = self.model.critic.integrator(obs.to(self.device), r_obs.reshape(self.batch_size, 1, -1).to(self.device))
+            if not self.model.critic.single:
+                old_c_feats = torch.cat([c_feats, act.squeeze().to(self.device)], -1)
 
         with torch.no_grad():
             next_act_target, next_log_prob, *_ = self.model.actor.sample(
@@ -95,9 +200,12 @@ class MetaCriticAWAC:
         )
 
         loss_critic = F.mse_loss(Q_target, Q1) + F.mse_loss(Q_target, Q2)
+        grad_diversity_critic = get_grad_direction_stats(self.model.critic)
+        critic_grad_norm = get_grad_norm(self.model.critic)
+        critic_weight_norm = get_weight_norm(self.model.critic)
         params = dict(self.model.critic.named_parameters())
-        dot = make_dot(loss_critic, params=params)
-        dot.render("meta_critic_awac_critic_graph", format="png")
+        # dot = make_dot(loss_critic, params=params)
+        # dot.render("meta_critic_awac_critic_graph", format="png")
 
         self.critic_optimizer.zero_grad()
         loss_critic.backward()
@@ -125,9 +233,9 @@ class MetaCriticAWAC:
         get_log_prob = self.model.actor.get_log_prob((obs.to(self.device),r_obs.reshape(self.batch_size, 1, -1).to(self.device),),act.squeeze().to(self.device),)
         loss_act = -(get_log_prob* weights).mean()
 
-        ###############################
-        ### compute loss aux        ###
-        ############################### 
+        ##############################
+        ## compute loss aux        ###
+        ############################## 
         loss_auxiliary = self.model.meta_critic(
             (
                 obs.reshape(self.batch_size, -1).to(self.device),
@@ -144,10 +252,22 @@ class MetaCriticAWAC:
         ################################################
         ### first pseudo update with loss act        ###
         ################################################
+        all_params = list(self.model.actor.parameters())
+        trainable_params = [p for p in self.model.actor.parameters() if p.requires_grad]
+        # grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), retain_graph=True, allow_unused=True)
 
-        grads_critic = torch.autograd.grad(loss_act, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        computed_grads = torch.autograd.grad(loss_act, trainable_params, retain_graph=True, allow_unused=True)
+        grads_critic = []
+        grad_idx = 0
+        for p in all_params:
+            if p.requires_grad:
+                grads_critic.append(computed_grads[grad_idx])
+                grad_idx += 1
+            else:
+                grads_critic.append(None) 
         # grads_critic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_critic]
         self.updater.step(self.model.actor, grads_critic, "phi_old", 1e-3)
+
         old_param = self.updater.get("phi_old")
         qw_ref = torch.min(torch.cat((Q1, Q2), 1), dim=1)[0].reshape((-1, 1))
         pi_val, log_pi_val, *_ = self.model.actor.sample_with_params((obs_val.to(self.device),r_obs_val.reshape(self.batch_size, 1, -1).to(self.device),),params=old_param,)
@@ -174,7 +294,19 @@ class MetaCriticAWAC:
         ### second pseudo update with loss aux       ###
         ################################################
         # print(f"DEBUG: loss_auxiliary grad_fn: {loss_auxiliary.grad_fn}") # ここがNoneならMeta-Critic自体が不正
-        grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        all_params = list(self.model.actor.parameters())
+        trainable_params_mcritic = [p for p in self.model.actor.parameters() if p.requires_grad]
+        # grads_mcritic = torch.autograd.grad(loss_auxiliary, self.model.actor.parameters(), create_graph=True, allow_unused=True)
+        computed_grads = torch.autograd.grad(loss_auxiliary, trainable_params_mcritic, create_graph=True, allow_unused=True)
+        grads_mcritic = []
+        grad_idx = 0
+        for p in all_params:
+            if p.requires_grad:
+                grads_mcritic.append(computed_grads[grad_idx])
+                grad_idx += 1
+            else:
+                grads_mcritic.append(None) 
+        laux = loss_auxiliary.data.item()
         # print(f"DEBUG: grads_mcritic[0] grad_fn: {grads_mcritic[0].grad_fn}") # ここがNoneならcreate_graphが効いていない
         # grads_mcritic = [torch.clamp(g, -1.0, 1.0) if g is not None else None for g in grads_mcritic]
         self.updater.step(self.model.actor, grads_mcritic, "phi_new", 1e-3, from_params=old_param)
@@ -210,8 +342,8 @@ class MetaCriticAWAC:
         # utility = utility / (1 + torch.abs(utility)) 
         loss_meta = -utility
         params = dict(self.model.meta_critic.named_parameters())
-        dot = make_dot(loss_meta, params=params)
-        dot.render("meta_critic_awac_meta_critic_graph2", format="png")
+        # dot = make_dot(loss_meta, params=params)
+        # dot.render("meta_critic_awac_meta_critic_graph2", format="png")
         self.meta_critic_optimizer.zero_grad()
 
         loss_meta.backward(retain_graph=True)
@@ -239,12 +371,18 @@ class MetaCriticAWAC:
         # loss_act = loss_act + loss_auxiliary
         self.actor_optimizer.zero_grad()
         params = dict(self.model.actor.named_parameters())
-        dot = make_dot(loss_act+loss_auxiliary, params=params)
-        dot.render("meta_critic_awac_actor_graph", format="png")
+        # dot = make_dot(loss_act+loss_auxiliary, params=params)
+        # dot.render("meta_critic_awac_actor_graph", format="png")
         loss_auxiliary.backward(retain_graph=True)
         loss_act.backward()
+        grad_diversity_actor = get_grad_direction_stats(self.model.actor)
+        actor_grad_norm = get_grad_norm(self.model.actor)
+        actor_weight_norm = get_weight_norm(self.model.actor)
         if data_for_logging is not None:
             grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
+        grad_diversity_meta_critic = get_grad_direction_stats(self.model.meta_critic)
+        meta_critic_grad_norm = get_grad_norm(self.model.meta_critic)
+        meta_critic_weight_norm = get_weight_norm(self.model.meta_critic)
         # for name, param in self.model.actor.named_parameters():
         #     if param.grad is not None:
         #         # 勾配の平均絶対値やノルムを表示
@@ -255,20 +393,52 @@ class MetaCriticAWAC:
         lm = loss_meta.data.item()
         self.actor_optimizer.step()
         la = loss_act.data.item()
-        with torch.no_grad(): 
-            if data_for_logging is not None:
-                log_data = {
-                    "loss/critic": lc,
-                    "loss/actor": la,
-                    "loss/meta": lm,
-                    "loss/auxiliary": loss_auxiliary.data.item(),
-                    "log_prob/actor": get_log_prob.mean().data.item(),
-                    "log_prob/actor_old": get_log_prob_old.mean().data.item(),
-                    "log_prob/actor_new": get_log_prob_new.mean().data.item(),
 
-                }
-                log_data.update(grad_metrics) # 勾配情報を追加
-                data_for_logging[0].log(log_data, step=data_for_logging[1])
+        with torch.no_grad():
+            new_mean, new_log_std, _ = self.model.actor((obs.to(self.device), r_obs.reshape(self.batch_size, 1, -1).to(self.device)))
+            a_feats = self.model.actor.integrator(obs.to(self.device), r_obs.reshape(self.batch_size, 1, -1).to(self.device))
+            c_feats = self.model.critic.integrator(obs.to(self.device), r_obs.reshape(self.batch_size, 1, -1).to(self.device))
+            if not self.model.critic.single:
+                new_c_feats = torch.cat([c_feats, act.squeeze().to(self.device)], -1)
+        
+            kl_div = get_kl_divergence((old_mean, old_log_std), (new_mean, new_log_std))
+            wass_dist = get_wasserstein_dist(old_c_feats, new_c_feats)
+            mmd_val = get_mmd(old_c_feats, new_c_feats)
+
+            if data_for_logging is not None:
+                data_for_logging[0].log(
+                    {
+                        "loss/actor": la,
+                        "loss/critic": lc,
+                        "loss/auxiliary": laux,
+                        "loss/meta": lm,
+                        "diag/Q": ((Q1 + Q2) /2).mean().item(),
+                        "diag/log_prob": log_prob.mean().data.item(),
+                        "diag/log_prob_old": get_log_prob_old.mean().data.item(),
+                        "diag/log_prob_new": get_log_prob_old.mean().data.item(),
+                        "diag/actor_grad_norm":actor_grad_norm,
+                        "diag/actor_weight_norm":actor_weight_norm,
+                        "diag/critic_grad_norm":critic_grad_norm,
+                        "diag/critic_weight_norm":critic_weight_norm,
+                        "diag/meta_critic_grad_norm":meta_critic_grad_norm,
+                        "diag/meta_critic_weight_norm":meta_critic_weight_norm,
+                        "diag/actor_kl_divergence": kl_div,
+                        "diag/critic_wasserstein_dist": wass_dist,
+                        "diag/critic_mmd": mmd_val,
+                        "diag/grad_diversity_actor": grad_diversity_actor,
+                        "diag/grad_diversity_critic": grad_diversity_critic,
+                        "diag/grad_diversity_meta_critic": grad_diversity_meta_critic,
+                        "plasticity/critic_effective_rank": get_effective_rank(c_feats),
+                        "plasticity/critic_approx_rank": get_approximate_rank(c_feats),
+                        "plasticity/critic_abs_approx_rank": get_abs_approximate_rank(c_feats),
+                        "plasticity/critic_dormant_ratio": get_dormant_units_ratio(c_feats),
+                        "plasticity/actor_effective_rank": get_effective_rank(a_feats),
+                        "plasticity/actor_approx_rank": get_approximate_rank(a_feats),
+                        "plasticity/actor_abs_approx_rank": get_abs_approximate_rank(a_feats),
+                        "plasticity/actor_dormant_ratio": get_dormant_units_ratio(a_feats),
+                    },
+                    step=data_for_logging[1],
+                )
     
 
     def update_target(self, ):
@@ -408,7 +578,7 @@ class MetaCriticAWAC:
             grad_metrics.update(get_grad_norms(self.model.meta_critic, "meta_critic"))
 
         self.actor_optimizer.zero_grad()
-        loss_auxiliary.backward(retain_graph=True)
+        # loss_auxiliary.backward(retain_graph=True)
         loss_act.backward()
         if data_for_logging is not None:
             grad_metrics.update(get_grad_norms(self.model.actor, "actor"))
@@ -538,7 +708,6 @@ class MetaCriticAWAC:
         params = dict(self.model.meta_critic.named_parameters())
         dot = make_dot(loss_meta, params=params)
         dot.render("meta_critic_awac_meta_critic_graph", format="png")
-
 
 class Scalar(nn.Module):
     def __init__(self, init_value: float):

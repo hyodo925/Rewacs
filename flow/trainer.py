@@ -54,7 +54,7 @@ def flow_training(
 def grevnet_training(
     model,
     data_loader,
-    validation,
+    # validation,
     flow_optimizer,
     epoch_num=500,
     model_dir=None,
@@ -100,14 +100,14 @@ def grevnet_training(
             # model.eval(data_loader,validation)
             if (m + 1) % model_save_freq == 0:
                 switching_score = model.set_switching_threshold(data_loader[:len(data_loader)]["humans_obs"])
-                model.plot_log_prob_comparison(
-                    model, 
-                    data_loader, 
-                    validation,
-                    switching_score,
-                    model.device, 
-                    save_path=f"figs/logp_graph/mean_2/logp_comparison_{m+1}.png"
-                )
+                # model.plot_log_prob_comparison(
+                #     model, 
+                #     data_loader, 
+                #     validation,
+                #     switching_score,
+                #     model.device, 
+                #     save_path=f"figs/logp_graph/mean_2/logp_comparison_{m+1}.png"
+                # )
                 
                 model.save_model(model_dir + f"/model_{m + 1}.pth")
                 if data_for_logging is not None:

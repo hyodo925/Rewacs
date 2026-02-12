@@ -38,7 +38,7 @@ class Simulation:
 
     square_width = 10
     circle_radius = 4
-    human_num = 10
+    human_num = 5
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -107,7 +107,7 @@ class Train:
 
     onpolicy_finetuning = False
     fintuning_rollout_itr = 1
-    finetune_mode = "learning_based_only" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
+    finetune_mode = "switching_all" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
     pre_explor = True
     pre_explor_itr = 100
 

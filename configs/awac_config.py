@@ -36,7 +36,7 @@ class Simulation:
     # train_scenario = "alone"
     # test_scenario = "alone"
 
-    square_width = 10
+    square_width = 20
     circle_radius = 4
     human_num = 5
     nonstop_human = False
@@ -47,7 +47,7 @@ class Simulation:
 class Humans:
     visible = True
     policy = "orca"
-    test_policy = "orca"
+    test_policy = "socialforce"
     radius = 0.3
     v_pref = 1
     sensor = "coordinates"
@@ -91,10 +91,10 @@ class Train:
     lr = 1e-4
     preliminary_exp_n = 200
     total_it = 10000
-    finetune_total_it = 100
+    finetune_total_it = 1000
     batch_size = 100
     buffer_capacity = 100000
-    actor_update_interval = 2
+    actor_update_interval = 1
     target_update_interval = 1
     polyak = 0.995
     training_alg = "AWAC"
@@ -102,11 +102,12 @@ class Train:
     onpolicy_finetuning = False
     fintuning_rollout_itr = 1
 
+    
 
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    finetune_eval_interval = 1
+    finetune_eval_interval = 10
     val_render = False
     render = False
     render_type = "traj"

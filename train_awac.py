@@ -32,7 +32,6 @@ from utils.state_integrators import (
 )
 from algo.awac.trainer import AWAC
 from algo.awac.actor import SocialActorAWAC
-
 try:
     import wandb
 except ModuleNotFoundError:
@@ -224,6 +223,9 @@ trainer = AWAC(
     batch_size=cfg.train.batch_size,
 )
 
+wandb.watch(model.actor, log="all", log_freq=100)
+wandb.watch(model.critic, log="all", log_freq=100)
+
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
     k=cfg.train.preliminary_exp_n,
@@ -246,7 +248,6 @@ loss_list = []
 #     render=False,
 #     print_results=True
 # )
-
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
@@ -275,23 +276,16 @@ with tqdm(range(cfg.train.total_it), desc=trainer.alg_name + " Training") as pba
                         step=i + 1,
                     )
 
-        lc, la = trainer.update(
+        trainer.update(
             update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
-        val_la = la if la is not None else ""
-        with open(train_log_csv, 'a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([i + 1, lc, val_la])
-
-        trainer.visualize_computational_graph(trainer)
-
-        # total_it += 1
         if ((i + 1) % cfg.train.target_update_interval) == 0:
             trainer.update_target()
 
         if (i + 1) % cfg.eval.eval_interval == 0:
+            
             val_logs = eval_policy(
                 eval_env=env,
                 model=model,

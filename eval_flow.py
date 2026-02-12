@@ -85,7 +85,7 @@ flow_run_dir = "wandb/Switching_Administrator_training/wandb/run-20260121_142518
 
 flow_config_path = os.path.join(flow_run_dir, "files/config.py")
 
-flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_500.pth")
+flow_model_path = os.path.join(flow_run_dir, "files/trained_models/model_300.pth")
 
 config_path = "./configs/flow_config.py"
 spec = importlib.util.spec_from_file_location("config", config_path)
@@ -174,12 +174,13 @@ expl = ExplorerCrowdSim(
 
 buffer = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity),sampler=SamplerWithoutReplacement())
 buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity),sampler=SamplerWithoutReplacement())
+buffer_val2 = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity),sampler=SamplerWithoutReplacement())
 
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer,
-    scenario=cfg.sim.train_scenario,
-    human_num=cfg.sim.human_num,
-    policy=cfg.humans.policy,
+    scenario="square_crossing",
+    human_num=5,
+    policy="orca",
     k=cfg.train.preliminary_exp_n,
     # k=100,
     render=False,
@@ -187,13 +188,24 @@ expl_logs = expl.exploration_k_ep_orca(
 
 expl_logs = expl.exploration_k_ep_orca(
     buffer=buffer_val,
-    scenario=cfg.sim.val_scenario,
-    human_num=cfg.sim.human_num_val,
-    policy=cfg.humans.test_policy,
+    scenario="circle_crossing",
+    human_num=5,
+    policy="socialforce",
     k=cfg.train.preliminary_exp_n,
     # k=100,
     render=False,
 )
+
+expl_logs = expl.exploration_k_ep_orca(
+    buffer=buffer_val2,
+    scenario="circle_crossing",
+    human_num=10,
+    policy="socialforce",
+    k=cfg.train.preliminary_exp_n,
+    # k=100,
+    render=False,
+)
+
 
 max_cdr = float("-inf")
 
@@ -232,6 +244,7 @@ flow.plot_log_prob_comparison(
     flow, 
     buffer, 
     buffer_val,
+    buffer_val2,
     flow.device, 
     save_path=f"figs/logp_graph/socialforce_10/logp_comparison.png"
 )

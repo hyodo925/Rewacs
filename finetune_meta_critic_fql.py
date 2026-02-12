@@ -31,7 +31,7 @@ from utils.state_integrators import (
 )
 from algo.meta_critic.actor import SocialActorMetaCriticAWAC
 from algo.meta_critic.virtual_updater import VirtualActorUpdater, Hot_Plug
-from algo.meta_critic.trainer import MetaCriticAWAC
+from algo.meta_critic.trainer_backup import MetaCriticAWAC
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 
 try:

@@ -34,6 +34,7 @@ from algo.awac.trainer import AWAC
 from algo.awac.actor import SocialActorAWAC
 from flow.model import GraphSituationFlow
 from algo.meta_critic.actor import SocialActorMetaCriticAWAC
+# from algo.meta_critic.trainer_hotplug import MetaCriticAWAC
 from algo.meta_critic.trainer_hotplug import MetaCriticAWAC
 from algo.meta_critic.meta_critic import MetaCriticNet, MetaCriticGraphNet
 from meta_rl_navigation import MetaRLNavigation
@@ -91,12 +92,18 @@ elif torch.cuda.is_available():
 else:
     device = torch.device("cpu")
     print("Using CPU")
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+# print(device)
 # start_time_log = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 
 ############### policy model ##################
 # Settings
 # run_dir = "wandb/awac_training/wandb/run-20260124_141502-b6znpdu2"
-run_dir = "wandb/awac_training/wandb/run-20260127_123238-tac0gepj"
+# run_dir= "wandb/awac_training/wandb/run-20260206_194947-v2c0tl1o"
+# run_dir = "wandb/awac_training/wandb/run-20260209_103308-pvj5m5so" #Weight Clipping
+# run_dir = "wandb/meta_critic_awac_training/wandb/run-20260209_111930-bu0vbcuy" #Weight Clipping with meta-critic
+run_dir = "wandb/meta_critic_awac_training/wandb/run-20260211_201827-yrrheadb" #Offline meta-critic awac pre-training baseline
+# run_dir = "wandb/awac_training/wandb/run-20260127_123238-tac0gepj"
 config_path = "./configs/meta_critic_awac_with_flow_config.py"
 
 model_path = os.path.join(run_dir, "files/trained_models/model_best.pth")
@@ -128,7 +135,7 @@ if cfg.log.wandb:
         project=cfg.log.wandb_project, 
         save_code=True,
         mode=cfg.log.wandb_mode,
-        name=f"{start_time_log}_awac_meta_critic_finetuning/seed{str(cfg.train.random_seed)}",
+        name=f"{start_time_log}_awac_meta_critic_finetuning_seed{str(cfg.train.random_seed)}_{str(cfg.sim.val_scenario)}_{str(cfg.sim.human_num)}_{str(cfg.humans.test_policy)}",
         dir=f"wandb/awac_meta_critic_finetuning/seed{str(cfg.train.random_seed)}",
     )
 
@@ -236,9 +243,17 @@ buffer_val = ReplayBuffer(storage=LazyTensorStorage(cfg.train.buffer_capacity))
 critic_optimizer = torch.optim.Adam(model.critic.parameters(), lr=cfg.train.lr)
 actor_optimizer = torch.optim.Adam(model.actor.parameters(), lr=cfg.train.lr)
 meta_optimizer = torch.optim.Adam(model.meta_critic.parameters(), lr=cfg.train.lr)
-checkpoint = torch.load(model_path, map_location=device)
-model.load_state_dict(checkpoint, strict=False)
+model.load_model(model_path)
+# checkpoint = torch.load(model_path, map_location=device)
+# model.load_state_dict(checkpoint, strict=False)
 model.to(device)
+
+# for param in model.actor.parameters():
+#     param.requires_grad = True
+
+# if model.actor.integrator is not None:
+#     for param in model.actor.integrator.parameters():
+#         param.requires_grad = False
 
 ######### flow ##########
 flow = GraphSituationFlow(
@@ -263,6 +278,9 @@ trainer = MetaCriticAWAC(
     batch_size=cfg.train.batch_size,
 )
 
+# wandb.watch(model.actor, log="all", log_freq=10)
+# wandb.watch(model.critic, log="all", log_freq=10)
+# wandb.watch(model.meta_critic, log="all", log_freq=10)
 # if not cfg.train.onpolicy_finetuning:
 #     expl_logs = expl.exploration_k_ep_orca(
 #         buffer=buffer,
@@ -274,22 +292,22 @@ trainer = MetaCriticAWAC(
 #         render=False,
 #     )
 
-# if cfg.train.pre_explor:
-#     with tqdm(range(cfg.train.pre_explor_itr)) as pbar:
-#         for i in enumerate(pbar):
-#             expl_logs = expl.exploration_k_ep_with_flow_mode(
-#                 buffer=buffer,
-#                 flow=flow,
-#                 model=model,
-#                 scenario=cfg.sim.val_scenario,
-#                 human_num=cfg.sim.human_num,
-#                 policy=cfg.humans.test_policy,
-#                 pbar=pbar,
-#                 mode=cfg.train.finetune_mode,
-#                 render=False,
-#             )
-
 if cfg.train.pre_explor:
+    with tqdm(range(cfg.train.pre_explor_itr)) as pbar:
+        for i in enumerate(pbar):
+            expl_logs = expl.exploration_k_ep_with_flow_mode(
+                buffer=buffer,
+                flow=flow,
+                model=model,
+                scenario=cfg.sim.val_scenario,
+                human_num=cfg.sim.human_num,
+                policy=cfg.humans.test_policy,
+                pbar=pbar,
+                mode=cfg.train.finetune_mode,
+                render=False,
+            )
+
+elif cfg.train.sep_sampling:
     with tqdm(range(cfg.train.pre_explor_itr)) as pbar:
         for i in enumerate(pbar):
             expl_logs = expl.exploration_k_ep_with_switching(
@@ -345,37 +363,39 @@ if cfg.log.wandb:
 #     render=False,
 #     print_results=True
 # )
-
+update_actor = False
 max_cdr = float("-inf")
 with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training") as pbar:
     for i, ch in enumerate(pbar):
         with torch.no_grad():
             # if i < 1000:
-            
+            # if update_actor:
             if not cfg.train.offline_learning:
                 for j in range(cfg.train.fintuning_rollout_itr):
-                    # expl_logs = expl.exploration_k_ep_with_flow_mode(
-                    #     buffer=buffer,
-                    #     flow=flow,
-                    #     model=model,
-                    #     scenario=cfg.sim.val_scenario,
-                    #     human_num=cfg.sim.human_num,
-                    #     policy=cfg.humans.test_policy,
-                    #     pbar=pbar,
-                    #     mode=cfg.train.finetune_mode,
-                    #     render=False,
-                    # )
-                    expl_logs = expl.exploration_k_ep_with_switching(
-                        buffer=buffer,
-                        buffer_val=buffer_val,
-                        flow=flow,
-                        model=model,
-                        scenario=cfg.sim.val_scenario,
-                        human_num=cfg.sim.human_num,
-                        policy=cfg.humans.test_policy,
-                        pbar=pbar,
-                        render=False,
-                    )
+                    if not cfg.train.sep_sampling:
+                        expl_logs = expl.exploration_k_ep_with_flow_mode(
+                            buffer=buffer,
+                            flow=flow,
+                            model=model,
+                            scenario=cfg.sim.val_scenario,
+                            human_num=cfg.sim.human_num,
+                            policy=cfg.humans.test_policy,
+                            pbar=pbar,
+                            mode=cfg.train.finetune_mode,
+                            render=False,
+                        )
+                    else:
+                        expl_logs = expl.exploration_k_ep_with_switching(
+                            buffer=buffer,
+                            buffer_val=buffer_val,
+                            flow=flow,
+                            model=model,
+                            scenario=cfg.sim.val_scenario,
+                            human_num=cfg.sim.human_num,
+                            policy=cfg.humans.test_policy,
+                            pbar=pbar,
+                            render=False,
+                        )
 
                 if cfg.log.wandb:
                     run.log(
@@ -391,15 +411,19 @@ with tqdm(range(cfg.train.finetune_total_it), desc=trainer.alg_name + " Training
                         step=i + 1,
                     )
 
-        trainer.finetune(
+        trainer.update(
+            # update_actor=True,
             # update_actor=((cfg.train.total_it % cfg.train.actor_update_interval) == 0),
             data_for_logging=(run, i + 1) if cfg.log.wandb else None,
         )
 
         # total_it += 1
+
+
         if ((i + 1) % cfg.train.target_update_interval) == 0:
             trainer.update_target()
-
+        # if i > 1000:
+        #     update_actor = True
         if (i + 1) % cfg.eval.finetune_interval == 0:
             val_logs = eval_policy(
                 eval_env=env,

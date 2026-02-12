@@ -7,10 +7,10 @@ MODES=(
   # switching_data_only
 )
 
-# SEEDS=(0 1 2 3 4)
-SEEDS=(0)
-HUMANS=(5)
-# HUMANS=(5 6 7 8 9 10)
+SEEDS=(0 1 2 3 4)
+# SEEDS=(0)
+# HUMANS=(5)
+HUMANS=(5 6 7 8 9 10)
 
 for HUMAN in "${HUMANS[@]}"; do
   for MODE in "${MODES[@]}"; do

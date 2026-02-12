@@ -15,6 +15,8 @@ import torch
 from torchrl.data import LazyTensorStorage, ReplayBuffer, SamplerWithoutReplacement
 from tqdm import tqdm, trange
 
+from tensordict import TensorDict
+
 from rewacs.envs import CrowdSim
 from rewacs.envs.policy.policy_factory import policy_factory
 from rewacs.envs.utils.action import ActionRot, ActionXY, ActionXYW
@@ -29,6 +31,21 @@ try:
 except ModuleNotFoundError:
     pass
 
+def load_data_to_buffer(buffer, file_path):
+    # 1. データのロード
+    data = torch.load(file_path, weights_only=False)
+    
+    count = 0
+    for episode in data:
+        for transition in episode:
+            # 2. 保存時と同じ形式の TensorDict を作成
+            sample = TensorDict(transition)
+            
+            # 3. Bufferに追加
+            buffer.add(sample)
+            count += 1
+            
+    print(f"Successfully loaded {count} transitions into the buffer.")
 
 def seed_all(seed):
     torch.manual_seed(seed)
@@ -176,15 +193,20 @@ expl_logs = expl.exploration_k_ep_orca(
     render=False,
 )
 
-expl_logs = expl.exploration_k_ep_orca(
-    buffer=buffer_val,
-    scenario=cfg.sim.val_scenario,
-    human_num=cfg.sim.human_num,
-    policy=cfg.humans.policy,
-    k=cfg.train.preliminary_exp_n,
-    # k=100,
-    render=False,
-)
+# expl_logs = expl.exploration_k_ep_orca(
+#     buffer=buffer_val,
+#     scenario=cfg.sim.val_scenario,
+#     human_num=cfg.sim.human_num,
+#     policy=cfg.humans.policy,
+#     k=cfg.train.preliminary_exp_n,
+#     # k=100,
+#     render=False,
+# )
+
+
+
+# 使い方
+load_data_to_buffer(buffer, 'data/collected_trajectories.pth')
 
 max_cdr = float("-inf")
 
@@ -210,7 +232,7 @@ flow_optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 grevnet_training(
     model=model,
     data_loader=buffer,
-    validation=buffer_val,
+    # validation=buffer_val,
     flow_optimizer=flow_optimizer,
     epoch_num=epoch_num,
     model_dir=trained_models_dir ,

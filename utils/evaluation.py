@@ -252,13 +252,16 @@ def eval_policy_with_flow(
     model,
     flow,
     transfunc,
+    scenario,
+    human_num,
+    policy,
     convert_action,
     discount=0.9,
     render=False,
     render_type="",
     path=None,
     eval_episodes=10,
-    scenario="test",
+    phase="test",
     random_p_num=False,
     p_range=(1, 11),
     ax=None,
@@ -294,12 +297,22 @@ def eval_policy_with_flow(
         if random_p_num:
             p_num = np.random.randint(*p_range)
             eval_env.set_human_num(p_num)
-        robot_state, human_state = eval_env.reset(scenario)
+
+        eval_env.set_human_num(human_num)
+        if phase == "val":
+            eval_env.set_val_scenario(scenario)
+        elif phase == "test":
+            eval_env.set_test_scenario(scenario)
+        eval_env.set_policy(policy)
+
+
+        robot_state, human_state = eval_env.reset(phase)
         done = False
         robot_obs, humans_obs = transfunc(
             robot_state,
             human_state,
         )
+
 
         # robot_obs, human_obs = robot_obs/4., human_obs/4.
         # state = psr.state0.expand(5, 20).to(psr.device)

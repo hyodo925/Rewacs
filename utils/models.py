@@ -76,8 +76,7 @@ class SocialCritic(nn.Module):
             return out1, out2
         else:
             return out1
-
-
+        
 class Actor(nn.Module):
     def __init__(self, D, d, init_w=3e-3):
         super().__init__()
@@ -287,6 +286,8 @@ class SocialActorPerturbation(nn.Module):
             return final_action, mid_action
         else:
             return final_action
+
+
 
 
 class SocialGaussianActor(nn.Module):

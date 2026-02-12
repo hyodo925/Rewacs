@@ -699,12 +699,13 @@ class ExplorerCrowdSim:
             #     # integrated_states = []
             done = False
             info = None
-            while True:
-                if info != None and (isinstance(info, ReachGoal)):
-                    break
-                if count > 5:
-                    if info != None and (isinstance(info, Timeout)):
-                        break
+            # while True:
+            while not done:
+                # if info != None and (isinstance(info, ReachGoal)):
+                #     break
+                # if count > 5:
+                #     if info != None and (isinstance(info, Timeout)):
+                #         break
                 a, _, _, _ = model.generate_action_feature(
                     (
                         humans_obs.unsqueeze(0).to(model.device),

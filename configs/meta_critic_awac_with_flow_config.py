@@ -38,7 +38,7 @@ class Simulation:
 
     square_width = 10
     circle_radius = 4
-    human_num = 10
+    human_num = 5
     nonstop_human = False
     centralized_planning = True
     random_p_num = False
@@ -99,7 +99,7 @@ class Train:
     lr = 3e-4
     preliminary_exp_n = 200
     total_it = 10000
-    finetune_total_it = 30000
+    finetune_total_it = 1000
     batch_size = 100
     buffer_capacity = 100000
     actor_update_interval = 2
@@ -109,14 +109,17 @@ class Train:
 
     onpolicy_finetuning =False
     fintuning_rollout_itr = 1
-    finetune_mode = "switching_data_only" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
+    finetune_mode = "switching_all" # "learning_based_only" / "rule_based_only" / "switching_all" / "switching_data_only"
     pre_explor = True
     pre_explor_itr = 100
+
+    sep_sampling = False
+    weight_clipping = False
 
 class Evaluation:
     eval_interval = 1000
     final_eval_num = 500
-    finetune_interval = 1000
+    finetune_interval = 10
     val_render = True
     render = False
     render_type = "traj"
